@@ -9,6 +9,10 @@ make all
 make flash
 ```
 
+Flashing uses OpenOCD with an ST-Link probe over SWD. The project-level
+configuration is `openocd.cfg`; start a debug server without flashing with
+`make openocd`.
+
 Serial debug output is sent to both USB CDC and USART1 at 115200 baud.
 
 ## Output Formats
@@ -227,7 +231,7 @@ avg=242us。2026-05-28 进一步优化 I2C3 timing 和恢复脉冲后，端到�
 The accepted default TMAG-only configuration is:
 
 ```text
-I2C3_TIMING_VALUE = 0x00200408
+CubeMX I2C3.Timing = 0x00200408
 TMAG_PULSE_HALF_US = 1
 TMAG_GUARD_US = 0
 TMAG_RESELECT_AFTER_SENSOR_PULSE = 0
@@ -258,8 +262,8 @@ recovery/retry path dominates.
 I2C1 and I2C2 use the same faster timing value as I2C3 by default:
 
 ```text
-I2C1_TIMING_VALUE = 0x00200408
-I2C2_TIMING_VALUE = 0x00200408
+CubeMX I2C1.Timing = 0x00200408
+CubeMX I2C2.Timing = 0x00200408
 ```
 
 AK-only USB CSV measurements:

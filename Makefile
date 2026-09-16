@@ -13,6 +13,8 @@ AS      = $(PREFIX)gcc -x assembler-with-cpp
 CP      = $(PREFIX)objcopy
 SZ      = $(PREFIX)size
 OD      = $(PREFIX)objdump
+OPENOCD ?= openocd
+OPENOCD_CFG ?= openocd.cfg
 
 # 构建输出
 BUILD_DIR = build
@@ -25,7 +27,9 @@ APP_SRC  = Core/Src/main.c \
             Core/Src/gpio.c \
             Core/Src/dma.c \
             Core/Src/i2c.c \
+            Core/Src/i2c_recovery.c \
             Core/Src/spi.c \
+            Core/Src/tim.c \
             Core/Src/usart.c \
             Core/Src/stm32h7xx_it.c \
             Core/Src/stm32h7xx_hal_msp.c \
@@ -160,16 +164,16 @@ all: $(BUILD_DIR) $(ELF) $(BIN) $(HEX) $(LST)
 	@$(SZ) $(ELF)
 
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
+	@if not exist "$(BUILD_DIR)" mkdir "$(BUILD_DIR)"
 
 # 从 .c -> .o
 $(BUILD_DIR)/%.o: %.c
-	@mkdir -p $(dir $@)
+	@if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))"
 	$(CC) $(CFLAGS) -o $@ $<
 
 # 从 .s -> .o
 $(BUILD_DIR)/%.o: %.s
-	@mkdir -p $(dir $@)
+	@if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))"
 	$(AS) $(ASFLAGS) -o $@ $<
 
 $(ELF): $(OBJ)
@@ -183,26 +187,27 @@ $(HEX): $(ELF)
 	$(CP) -O ihex $< $@
 
 clean:
-	rm -rf $(BUILD_DIR)
+	@if exist "$(BUILD_DIR)" rmdir /S /Q "$(BUILD_DIR)"
 
 #==============================================================================
-# 烧录 (ST-Link)
+# 烧录 (OpenOCD + ST-Link)
 #==============================================================================
-flash: $(BIN)
-	st-flash write $(BIN) 0x08000000
+flash: $(ELF)
+	$(OPENOCD) -f $(OPENOCD_CFG) \
+		-c "program $(ELF) verify reset exit"
 
 #==============================================================================
 # 调试 (OpenOCD + GDB)
 #==============================================================================
 debug: $(ELF)
-	openocd -f interface/stlink.cfg -f target/stm32h7x.cfg \
+	$(OPENOCD) -f $(OPENOCD_CFG) \
 		-c "program $(ELF) verify reset exit" &
 
 #==============================================================================
 # OpenOCD 调试服务器（单独运行）
 #==============================================================================
 openocd:
-	openocd -f interface/stlink.cfg -f target/stm32h7x.cfg
+	$(OPENOCD) -f $(OPENOCD_CFG)
 
 #==============================================================================
 # 使用 make debug 烧录并进入调试
@@ -212,7 +217,7 @@ openocd:
 #==============================================================================
 debug-gdb: $(ELF)
 	@echo "Starting OpenOCD server..."
-	@openocd -f interface/stlink.cfg -f target/stm32h7x.cfg &
+	@$(OPENOCD) -f $(OPENOCD_CFG) &
 	@sleep 2
 	@echo "Starting GDB..."
 	arm-none-eabi-gdb -iex "target remote localhost:3333" \

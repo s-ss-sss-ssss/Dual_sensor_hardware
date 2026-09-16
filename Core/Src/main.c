@@ -21,6 +21,7 @@
 #include "dma.h"
 #include "i2c.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "usb_device.h"
 #include "gpio.h"
@@ -169,6 +170,7 @@ int _write(int file, char *ptr, int len)
   */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
   // Immediate test - LED GPIO should work even before clock init
   // This confirms firmware is running
@@ -203,6 +205,7 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USB_DEVICE_Init();
   MX_I2C3_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_SET);
@@ -258,108 +261,107 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    /* USER CODE END WHILE */
+  while (1) {
+      /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
+      /* USER CODE BEGIN 3 */
 
-	    static uint8_t binary_frame[4096];
-	    static char frame[3072];
-	    int n = 0;
+      static uint8_t binary_frame[4096];
+      static char frame[3072];
+      int n = 0;
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
-        static uint32_t binary_seq = 0;
-        static uint32_t ak_frames = 0;
-        static uint32_t tmag_frames = 0;
-        static uint32_t icm_frames = 0;
-        static uint32_t skipped = 0;
-        static uint32_t errors = 0;
-        static uint32_t last_stats_ms = 0;
+      static uint32_t binary_seq = 0;
+      static uint32_t ak_frames = 0;
+      static uint32_t tmag_frames = 0;
+      static uint32_t icm_frames = 0;
+      static uint32_t skipped = 0;
+      static uint32_t errors = 0;
+      static uint32_t last_stats_ms = 0;
 
 #if SENSOR_OUTPUT_ICM
-	    n = ICM42670_ReadToBinary(&icm, binary_frame, sizeof(binary_frame),
-                                  &binary_seq, &icm_frames, &skipped, &errors);
-	    if (n > 0) {
-	        USB_Send_Raw(binary_frame, (uint16_t)n);
-	    }
+      n = ICM42670_ReadToBinary(&icm, binary_frame, sizeof(binary_frame),
+                                &binary_seq, &icm_frames, &skipped, &errors);
+      if (n > 0) {
+          USB_Send_Raw(binary_frame, (uint16_t)n);
+      }
 #endif
 
 #if SENSOR_OUTPUT_AK
-    n = Sensor_AK09973D_ReadToBinary(binary_frame, sizeof(binary_frame),
-                                     &binary_seq, &ak_frames, &skipped, &errors);
-    if (n > 0) {
-        USB_Send_Raw(binary_frame, (uint16_t)n);
-    }
+      n = Sensor_AK09973D_ReadToBinary(binary_frame, sizeof(binary_frame),
+                                       &binary_seq, &ak_frames, &skipped, &errors);
+      if (n > 0) {
+          USB_Send_Raw(binary_frame, (uint16_t)n);
+      }
 #endif
 
 #if SENSOR_OUTPUT_TMAG
-    {
-        n = Sensor_TMAG3001_ReadAllToBinary(binary_frame, sizeof(binary_frame),
-                                            &binary_seq, &tmag_frames,
-                                            &skipped, &errors);
+      {
+          n = Sensor_TMAG3001_ReadAllToBinary(binary_frame, sizeof(binary_frame),
+                                              &binary_seq, &tmag_frames,
+                                              &skipped, &errors);
 
-        if (n > 0) {
-            USB_Send_Raw(binary_frame, (uint16_t)n);
-        }
-    }
+          if (n > 0) {
+              USB_Send_Raw(binary_frame, (uint16_t)n);
+          }
+      }
 #endif
 
-    uint32_t now = HAL_GetTick();
-    if ((now - last_stats_ms) >= 1000U) {
-        size_t off = 0;
-        if (BinaryWriter_AppendStats(binary_frame, sizeof(binary_frame), &off,
-                                     binary_seq++, now,
-                                     ak_frames, tmag_frames, icm_frames,
-                                     skipped, errors)) {
-            USB_Send_Raw(binary_frame, (uint16_t)off);
-        }
-        last_stats_ms = now;
-    }
+      uint32_t now = HAL_GetTick();
+      if ((now - last_stats_ms) >= 1000U) {
+          size_t off = 0;
+          if (BinaryWriter_AppendStats(binary_frame, sizeof(binary_frame), &off,
+                                       binary_seq++, now,
+                                       ak_frames, tmag_frames, icm_frames,
+                                       skipped, errors)) {
+              USB_Send_Raw(binary_frame, (uint16_t)off);
+                                       }
+          last_stats_ms = now;
+      }
 
 #else
 #if SENSOR_OUTPUT_ICM
-	    n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
-	    if (n > 0) {
-            if (n < (int)sizeof(frame)) {
-	            frame[n] = '\0';
-	            USB_Send_String(frame);
-            }
-	    }
+      n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
+      if (n > 0) {
+          if (n < (int)sizeof(frame)) {
+              frame[n] = '\0';
+              USB_Send_String(frame);
+          }
+      }
 #endif
 
 #if SENSOR_OUTPUT_AK
-    n = Sensor_AK09973D_ReadToCSV(frame, sizeof(frame));
-    if (n > 0) {
-        if (n < (int)sizeof(frame)) {
-            frame[n] = '\0';
-            USB_Send_String(frame);
-        }
-    }
+      n = Sensor_AK09973D_ReadToCSV(frame, sizeof(frame));
+      if (n > 0) {
+          if (n < (int)sizeof(frame)) {
+              frame[n] = '\0';
+              USB_Send_String(frame);
+          }
+      }
 #endif
 
 #if SENSOR_OUTPUT_TMAG
-    {
-        n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
+      {
+          n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
 
-        if (n > 0) {
-            if (n < (int)sizeof(frame)) {
-                frame[n] = '\0';
-                USB_Send_String(frame);
-            }
-        }
-    }
+          if (n > 0) {
+              if (n < (int)sizeof(frame)) {
+                  frame[n] = '\0';
+                  USB_Send_String(frame);
+              }
+          }
+      }
 #endif
 #endif
 
-    // LED 状态指示
-    static uint32_t last_toggle = 0;
-    if (HAL_GetTick() - last_toggle > 500)
-    {
-        HAL_GPIO_TogglePin(LEDG_GPIO_Port, LEDG_Pin);
-        last_toggle = HAL_GetTick();
-    }
+      // LED 状态指示
+      static uint32_t last_toggle = 0;
+      if (HAL_GetTick() - last_toggle > 500)
+      {
+          HAL_GPIO_TogglePin(LEDG_GPIO_Port, LEDG_Pin);
+          last_toggle = HAL_GetTick();
+      }
 
-    /* USER CODE END 3 */
+      /* USER CODE END 3 */
   }
 }
 

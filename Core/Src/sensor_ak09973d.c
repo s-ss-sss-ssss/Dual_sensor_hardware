@@ -107,15 +107,11 @@ static void i2c1_gpio_bus_clear(void)
 static void ak_bus_reset(uint8_t bus)
 {
     I2C_HandleTypeDef *hi2c = get_i2c(bus);
-    IRQn_Type ev_irq = (bus == 1) ? I2C1_EV_IRQn : I2C2_EV_IRQn;
-    IRQn_Type er_irq = (bus == 1) ? I2C1_ER_IRQn : I2C2_ER_IRQn;
     GPIO_TypeDef *reset_port = (bus == 1) ? I2C1_RESET_GPIO_Port : I2C2_RESET_GPIO_Port;
     uint16_t reset_pin = (bus == 1) ? I2C1_RESET_Pin : I2C2_RESET_Pin;
 
     printf("[AK] Reset I2C%d...\r\n", bus);
 
-    HAL_NVIC_DisableIRQ(ev_irq);
-    HAL_NVIC_DisableIRQ(er_irq);
     HAL_I2C_DeInit(hi2c);
 
     HAL_GPIO_WritePin(reset_port, reset_pin, GPIO_PIN_RESET);
@@ -129,10 +125,6 @@ static void ak_bus_reset(uint8_t bus)
         MX_I2C2_Init();
     }
 
-    HAL_NVIC_SetPriority(ev_irq, 0, 0);
-    HAL_NVIC_EnableIRQ(ev_irq);
-    HAL_NVIC_SetPriority(er_irq, 0, 0);
-    HAL_NVIC_EnableIRQ(er_irq);
     HAL_Delay(20);
     print_i2c_diag((bus == 1) ? "[AK] I2C1 after reset" : "[AK] I2C2 after reset", hi2c);
 }

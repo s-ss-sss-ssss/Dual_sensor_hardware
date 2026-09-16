@@ -51,10 +51,9 @@ extern "C" {
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
-void USB_Send_String(char *str);
 
 /* USER CODE BEGIN EFP */
-
+void USB_Send_String(char *str);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

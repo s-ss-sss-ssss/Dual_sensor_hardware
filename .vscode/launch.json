@@ -10,7 +10,7 @@
       "executable": "${workspaceFolder}/build/MagGrad_Dual_V1.elf",
       "runToEntryPoint": "Reset_Handler",
       "device": "STM32H743VITx",
-      "configFiles": ["interface/stlink.cfg", "target/stm32h7x.cfg"],
+      "configFiles": ["${workspaceFolder}/openocd.cfg"],
       "showDevDebugOutput": "raw",
       "preLaunchTask": "make all",
       "cortex-debug.gdbPath": "/opt/ST/STM32CubeCLT_1.21.0/GNU-tools-for-STM32/bin/arm-none-eabi-gdb"
