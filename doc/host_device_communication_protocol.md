@@ -3,7 +3,7 @@
 ## 1. 文档范围
 
 本文档根据当前工程源码整理，描述 STM32H743 下位机向上位机发送
-AK09973D、TMAG3001 和可选 ICM42670 数据时使用的通信协议。
+AK09973D、TMAG3001、可选 ICM42670 和三通道相位捕获数据时使用的通信协议。
 
 当前协议是以下位机连续上传为主的遥测协议。USB 接收回调没有实现命令
 缓存或命令解析，因此当前版本不存在上位机到下位机的启停、配置、查询或
@@ -18,6 +18,9 @@ AK09973D、TMAG3001 和可选 ICM42670 数据时使用的通信协议。
 - `Core/Src/icm42670.c`
 - `USB_DEVICE/App/usbd_cdc_if.c`
 - `tools/usb_read.py`
+
+高频连续接收、ROS Noetic 集成及 ROS 2 迁移方案见
+[`host_ros_high_rate_receiver_design.md`](host_ros_high_rate_receiver_design.md)。
 
 ## 2. 当前默认配置
 
@@ -34,8 +37,9 @@ SENSOR_OUTPUT_FORMAT = SENSOR_OUTPUT_FORMAT_BINARY
 
 1. 启动和初始化阶段的 ASCII 调试信息；
 2. TMAG3001 二进制数据帧；
-3. 约每秒一次的 STATS 帧；
-4. TMAG3001 访问失败时的 ERR 帧。
+3. 每轮测量一次的 PHASE 帧；
+4. 约每秒一次的 STATS 帧；
+5. TMAG3001 访问失败时的 ERR 帧。
 
 开发板具有 AK09973D 和 TMAG3001 两类磁传感器，但 AK09973D 默认没有
 启用输出。需要同时输出两类磁传感器时，可以使用：
@@ -105,6 +109,7 @@ frame_len = 16 + payload_len
 | `0x01` | AK | AK09973D 数据 |
 | `0x02` | TMAG | TMAG3001 数据 |
 | `0x03` | ICM | ICM42670 数据 |
+| `0x04` | PHASE | TIM2 三通道相位捕获时长 |
 | `0xE0` | ERR | 访问错误 |
 | `0xF0` | STATS | 累计统计 |
 
@@ -132,7 +137,7 @@ crc16 = CRC16_CCITT_FALSE(frame[2 : 14 + payload_len])
 
 ### 4.3 帧序号
 
-AK、TMAG、ICM、ERR 和 STATS 共用一个 `uint32_t` 全局序号。每生成一帧
+AK、TMAG、ICM、PHASE、ERR 和 STATS 共用一个 `uint32_t` 全局序号。每生成一帧
 递增一次，达到 `0xFFFFFFFF` 后自然回绕。
 
 上位机期望下一序号为：
@@ -260,7 +265,34 @@ ax, ay, az, gx, gy, gz, temp
 
 字段均为传感器原始计数。
 
-## 8. ERR 错误帧
+## 8. PHASE 相位捕获帧
+
+每轮传感器测量开始前锁存 TIM2 计数器和 `HAL_GetTick()`，计算该采样时刻
+距离各通道最近一次上升沿的时间；全部已启用传感器读取结束后发送一帧：
+
+```text
+type        = 0x04
+payload_len = 12
+frame_len   = 28 bytes
+```
+
+Payload 为 3 个连续的 `u32le`：
+
+| Payload 偏移 | 字段 | 含义 |
+| ---: | --- | --- |
+| 0 | `ch1_age_us` | 采样时刻距离 CH1 最近一次上升沿的时间，单位 μs |
+| 4 | `ch2_age_us` | 采样时刻距离 CH2 最近一次上升沿的时间，单位 μs |
+| 8 | `ch3_age_us` | 采样时刻距离 CH3 最近一次上升沿的时间，单位 μs |
+
+TIM2 以 1 MHz 自由运行，因此一个计数对应 1 μs。计数差使用 32 位无符号
+减法，支持 TIM2 自然回绕。输入边沿频率可以低于主循环采样频率；两个边沿
+之间的值会随采样持续增大，新边沿到来后回落到接近零。仅启动后从未捕获过
+边沿的通道填 `0xFFFFFFFF`（十进制 `4294967295`）；通道捕获过一次后即使
+断开，也继续报告距最后边沿的累计时间。PHASE 帧头 `tick_ms` 与该轮相位
+采样时刻一致。固件不换算相位角，频率、角度方向和相位计算约定由上位机
+负责。
+
+## 9. ERR 错误帧
 
 ```text
 type        = 0xE0
@@ -295,7 +327,7 @@ ICM42670 读取错误当前使用 `source=3, code=2, detail=0`。
 当前 ERR Payload 没有包含 AK 的 `(bus, mask)` 或 TMAG 的
 `(ch_mask, addr)`，所以上位机不能总是确定具体发生错误的传感器实例。
 
-## 9. STATS 统计帧
+## 10. STATS 统计帧
 
 主循环约每秒发送一次累计统计帧：
 
@@ -325,9 +357,9 @@ rate = (count_new - count_old) * 1000 / (tick_new - tick_old)
 `last_stats_ms` 初始为 0，而传感器初始化可能持续数秒，所以进入主循环后
 第一帧 STATS 通常立即发送；此后才近似每秒发送一次。
 
-## 10. CSV 调试格式
+## 11. CSV 调试格式
 
-### 10.1 AK09973D
+### 11.1 AK09973D
 
 ```text
 AK,bus,mask,hx,hy,hz,drdy,err,dor\r\n
@@ -346,7 +378,7 @@ AKERR,bus,mask,TCA,hal_i2c_error\r\n
 AKERR,bus,mask,READ,hal_i2c_error\r\n
 ```
 
-### 10.2 TMAG3001
+### 11.2 TMAG3001
 
 ```text
 TMAG,ch_mask,addr,x,y,z,drdy,overflow\r\n
@@ -362,14 +394,22 @@ CSV 中 `ch_mask` 使用十进制输出，因此示例中的 `4` 表示掩码 `0
 不是 CH4。TMAG CSV 路径中的读取失败通常被直接跳过，没有生成与二进制
 ERR 帧等价的完整错误行。
 
-### 10.3 ICM42670
+### 11.3 ICM42670
 
 ```text
 ICM,ax,ay,az,gx,gy,gz,temp\r\n
 ICMERR,READ\r\n
 ```
 
-## 11. 上位机流式解析要求
+### 11.4 PHASE
+
+```text
+PHASE,ch1_age_us,ch2_age_us,ch3_age_us\r\n
+```
+
+启动后从未捕获过边沿的通道输出十进制 `4294967295`。
+
+## 12. 上位机流式解析要求
 
 推荐的二进制流解析步骤：
 
@@ -405,7 +445,7 @@ python tools/usb_read.py --port COM5 --format auto --duration 10
 路径中是否含 `usb` 或 `modem`，而 Windows 设备名通常只是 `COM5`，可能
 无法自动选中。
 
-## 12. 上位机到下位机方向
+## 13. 上位机到下位机方向
 
 当前 USB CDC 接收回调仅重新设置接收缓冲区并启动下一次接收，没有保存或
 解析收到的数据。USART1 也没有应用层接收中断、DMA 接收或命令状态机。
@@ -423,42 +463,33 @@ python tools/usb_read.py --port COM5 --format auto --duration 10
 若后续增加下行控制，建议为命令方向使用独立的帧类型，并明确事务号、命令
 码、参数长度、ACK/NACK、错误码和超时重试规则。
 
-## 13. PA0～PA3 GPIO 使用核查
+## 14. PA0～PA2 相位输入
 
-### 13.1 配置状态
+### 14.1 配置状态
 
-CubeMX 工程将 PA0、PA1、PA2、PA3 锁定配置为普通 GPIO 输入。在
-`MX_GPIO_Init()` 中，四个引脚统一配置为：
+CubeMX 工程将 PA0、PA1、PA2 配置为 TIM2 的输入捕获通道：
 
-```c
-GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 |
-                      GPIO_PIN_2 | GPIO_PIN_3;
-GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-GPIO_InitStruct.Pull = GPIO_NOPULL;
-HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+```text
+PA0 = TIM2_CH1
+PA1 = TIM2_CH2
+PA2 = TIM2_CH3
 ```
 
-即：普通输入、无上拉、无下拉、无外部中断。
+三路均为上升沿直接输入捕获、无内部上下拉。TIM2 输入时钟为 60 MHz，预分频
+值为 59，得到 1 μs/tick 的 32 位自由运行计数器。TIM2 全局中断调用 HAL
+定时器处理函数，捕获回调只保存每通道最近一次 CCR 和有效状态。
 
-### 13.2 应用情况
+### 14.2 应用情况
 
-经核查当前工程应用代码：
+固件在每轮传感器读取前通过短临界区锁存采样计数和各通道最近一次 CCR，
+直接计算二者的无符号差值。临界点处已经由硬件锁存、但 ISR 尚未处理的 CCR
+也会按其相对采样时刻的位置判定；采样时刻之后的边沿留到下一轮使用。ISR
+不执行 USB、传感器访问或相位换算。
 
-- 没有对 `GPIOA, GPIO_PIN_0`～`GPIO_PIN_3` 调用 `HAL_GPIO_ReadPin()`；
-- 没有直接读取 `GPIOA->IDR` 的 bit 0～bit 3；
-- 没有对 PA0～PA3 配置 EXTI；
-- 没有实现 EXTI0～EXTI3 中断处理函数；
-- 没有将这些引脚配置为 ADC、定时器输入捕获、串口或其他复用功能；
-- 没有与这些引脚对应的应用层名称或业务状态变量。
+三路捕获输入均未启用内部上下拉，硬件应提供稳定电平，避免输入悬空产生
+伪边沿。
 
-结论：PA0～PA3 目前只完成了初始化，在固件运行逻辑中没有实际应用。
-
-由于配置为 `GPIO_NOPULL`，如果硬件上这些引脚没有稳定的外部电平，它们会
-处于悬空状态。若确定未使用，可以在 CubeMX 中改为模拟模式以关闭数字输入
-缓冲、降低噪声敏感性和少量功耗；如果硬件预留给拨码、地址选择或同步输入，
-则应根据电路增加合适的上下拉，并在应用代码中明确采样逻辑。
-
-## 14. 已知协议局限
+## 15. 已知协议局限
 
 - 默认编译只上传 TMAG3001，AK09973D 虽存在于硬件和协议中但未启用；
 - 启动 ASCII 日志和二进制数据共用 USB 字节流；

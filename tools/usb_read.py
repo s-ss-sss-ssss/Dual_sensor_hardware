@@ -16,6 +16,7 @@ TYPE_NAMES = {
     0x01: "AK",
     0x02: "TMAG",
     0x03: "ICM",
+    0x04: "PHASE",
     0xE0: "ERR",
     0xF0: "STATS",
 }
@@ -104,6 +105,9 @@ def decode_frame(frame):
     if frame_type == 0x03 and len(payload) == 14:
         ax, ay, az, gx, gy, gz, temp = struct.unpack("<hhhhhhh", payload)
         return "ICM", "ICM", f"ICM seq={seq} t={tick_ms} acc=({ax},{ay},{az}) gyr=({gx},{gy},{gz}) temp={temp}"
+    if frame_type == 0x04 and len(payload) == 12:
+        ch1_us, ch2_us, ch3_us = struct.unpack("<III", payload)
+        return "PHASE", "PHASE", f"PHASE seq={seq} t={tick_ms} age_us=({ch1_us},{ch2_us},{ch3_us})"
     if frame_type == 0xE0 and len(payload) == 7:
         source, code, detail = struct.unpack("<BHI", payload)
         key = f"SRC{source}"
@@ -163,7 +167,7 @@ def analyze_binary(raw, elapsed):
             print(f"  {sample}")
 
     print("\n--- 帧率统计 ---")
-    for name in ["AK", "TMAG", "ICM", "ERR", "STATS"]:
+    for name in ["AK", "TMAG", "ICM", "PHASE", "ERR", "STATS"]:
         count = counts.get(name, 0)
         if count == 0:
             continue
@@ -193,6 +197,7 @@ def analyze_csv_text(text, elapsed):
         "AK": re.compile(r"^AK,(\d+),0x([0-9a-fA-F]+),(-?\d+),(-?\d+),(-?\d+),\d+,\d+,\d+$"),
         "TMAG": re.compile(r"^TMAG,(\d+),0x([0-9a-fA-F]+),(-?\d+),(-?\d+),(-?\d+),\d+,\d+$"),
         "ICM": re.compile(r"^ICM,-?\d+,-?\d+,-?\d+,-?\d+,-?\d+,-?\d+,-?\d+$"),
+        "PHASE": re.compile(r"^PHASE,(\d+),(\d+),(\d+)$"),
     }
     sensor_lines = {k: [] for k in patterns}
     for line in lines:

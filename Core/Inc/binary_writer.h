@@ -13,6 +13,7 @@
 #define BINARY_FRAME_TYPE_AK     0x01U
 #define BINARY_FRAME_TYPE_TMAG   0x02U
 #define BINARY_FRAME_TYPE_ICM    0x03U
+#define BINARY_FRAME_TYPE_PHASE  0x04U
 #define BINARY_FRAME_TYPE_ERR    0xE0U
 #define BINARY_FRAME_TYPE_STATS  0xF0U
 
@@ -31,6 +32,9 @@ int BinaryWriter_AppendStats(uint8_t *out, size_t out_size, size_t *off,
                              uint32_t ak_frames, uint32_t tmag_frames,
                              uint32_t icm_frames, uint32_t skipped,
                              uint32_t errors);
+int BinaryWriter_AppendPhase(uint8_t *out, size_t out_size, size_t *off,
+                             uint32_t seq, uint32_t tick_ms,
+                             const uint32_t phase_us[3]);
 void BinaryWriter_PutU8(uint8_t *payload, size_t *off, uint8_t value);
 void BinaryWriter_PutI16(uint8_t *payload, size_t *off, int16_t value);
 void BinaryWriter_PutU16(uint8_t *payload, size_t *off, uint16_t value);

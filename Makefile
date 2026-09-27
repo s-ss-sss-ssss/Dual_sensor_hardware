@@ -178,7 +178,9 @@ $(BUILD_DIR)/%.o: %.s
 
 $(ELF): $(OBJ)
 	$(CC) $(OBJ) $(LDFLAGS) -o $@
-	$(OD) -h $@ > $(LST)
+
+$(LST): $(ELF)
+	$(OD) -h $< > $@
 
 $(BIN): $(ELF)
 	$(CP) -O binary $< $@

@@ -32,6 +32,7 @@
 #include "sensor_ak09973d.h"
 #include "sensor_tmag3001.h"
 #include "binary_writer.h"
+#include "csv_writer.h"
 #include <stdio.h>
 #include <string.h>
 #include "usbd_cdc_if.h"
@@ -45,6 +46,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define PHASE_CAPTURE_CHANNEL_COUNT  3U
+#define PHASE_CAPTURE_NO_EDGE        UINT32_MAX
 
 /* USER CODE END PD */
 
@@ -61,6 +65,8 @@ icm42670_t icm = {
     .hspi = &hspi1,
     .cs_port = SPI1_CS_GPIO_Port,
     .cs_pin = SPI1_CS_Pin};
+static volatile uint32_t phase_last_capture[PHASE_CAPTURE_CHANNEL_COUNT];
+static volatile uint8_t phase_capture_valid[PHASE_CAPTURE_CHANNEL_COUNT];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -85,6 +91,85 @@ static void MPU_Config(void);
 #ifndef SENSOR_OUTPUT_FORMAT
 #define SENSOR_OUTPUT_FORMAT SENSOR_OUTPUT_FORMAT_BINARY
 #endif
+
+static uint32_t PhaseCapture_EnterCritical(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    __DMB();
+    return primask;
+}
+
+static void PhaseCapture_ExitCritical(uint32_t primask)
+{
+    __DMB();
+    if (primask == 0U) {
+        __enable_irq();
+    }
+}
+
+static void PhaseCapture_Start(void)
+{
+    uint32_t primask = PhaseCapture_EnterCritical();
+
+    for (uint32_t i = 0; i < PHASE_CAPTURE_CHANNEL_COUNT; i++) {
+        phase_last_capture[i] = 0U;
+        phase_capture_valid[i] = 0U;
+    }
+    __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC1 | TIM_FLAG_CC2 | TIM_FLAG_CC3);
+
+    PhaseCapture_ExitCritical(primask);
+
+    if (HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1) != HAL_OK ||
+        HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_2) != HAL_OK ||
+        HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_3) != HAL_OK) {
+        Error_Handler();
+    }
+}
+
+static uint32_t PhaseCapture_Sample(
+    uint32_t phase_age_us[PHASE_CAPTURE_CHANNEL_COUNT])
+{
+    static const uint32_t channels[PHASE_CAPTURE_CHANNEL_COUNT] = {
+        TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3
+    };
+    static const uint32_t flags[PHASE_CAPTURE_CHANNEL_COUNT] = {
+        TIM_FLAG_CC1, TIM_FLAG_CC2, TIM_FLAG_CC3
+    };
+    uint32_t captured[PHASE_CAPTURE_CHANNEL_COUNT];
+    uint8_t valid[PHASE_CAPTURE_CHANNEL_COUNT];
+    uint32_t sample_count;
+    uint32_t sample_tick_ms;
+    uint32_t primask = PhaseCapture_EnterCritical();
+
+    sample_count = __HAL_TIM_GET_COUNTER(&htim2);
+    sample_tick_ms = HAL_GetTick();
+    for (uint32_t i = 0; i < PHASE_CAPTURE_CHANNEL_COUNT; i++) {
+        captured[i] = phase_last_capture[i];
+        valid[i] = phase_capture_valid[i];
+
+        if (__HAL_TIM_GET_FLAG(&htim2, flags[i]) != RESET) {
+            uint32_t pending_capture =
+                HAL_TIM_ReadCapturedValue(&htim2, channels[i]);
+
+            /* Include a pending edge only if it occurred no later than this sample. */
+            if ((int32_t)(sample_count - pending_capture) >= 0) {
+                captured[i] = pending_capture;
+                valid[i] = 1U;
+            }
+        }
+    }
+
+    PhaseCapture_ExitCritical(primask);
+
+    for (uint32_t i = 0; i < PHASE_CAPTURE_CHANNEL_COUNT; i++) {
+        phase_age_us[i] = (valid[i] != 0U)
+                            ? (sample_count - captured[i])
+                            : PHASE_CAPTURE_NO_EDGE;
+    }
+
+    return sample_tick_ms;
+}
 
 // USB CDC发送字符串
 extern USBD_HandleTypeDef hUsbDeviceFS;
@@ -257,18 +342,27 @@ int main(void)
       HAL_Delay(500);
   }
 
+  PhaseCapture_Start();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
-      /* USER CODE END WHILE */
+    /* USER CODE END WHILE */
 
-      /* USER CODE BEGIN 3 */
+    /* USER CODE BEGIN 3 */
 
+#if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
       static uint8_t binary_frame[4096];
+#else
       static char frame[3072];
+#endif
+      uint32_t phase_us[PHASE_CAPTURE_CHANNEL_COUNT];
+      uint32_t phase_tick_ms;
       int n = 0;
+
+      phase_tick_ms = PhaseCapture_Sample(phase_us);
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
       static uint32_t binary_seq = 0;
       static uint32_t ak_frames = 0;
@@ -306,6 +400,14 @@ int main(void)
       }
 #endif
 
+      {
+          size_t off = 0;
+          if (BinaryWriter_AppendPhase(binary_frame, sizeof(binary_frame), &off,
+                                       binary_seq++, phase_tick_ms, phase_us)) {
+              USB_Send_Raw(binary_frame, (uint16_t)off);
+          }
+      }
+
       uint32_t now = HAL_GetTick();
       if ((now - last_stats_ms) >= 1000U) {
           size_t off = 0;
@@ -319,6 +421,7 @@ int main(void)
       }
 
 #else
+      (void)phase_tick_ms;
 #if SENSOR_OUTPUT_ICM
       n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
       if (n > 0) {
@@ -351,6 +454,15 @@ int main(void)
           }
       }
 #endif
+
+      {
+          size_t off = 0;
+          if (CSV_AppendPhase(frame, sizeof(frame), &off, phase_us) &&
+              off < sizeof(frame)) {
+              frame[off] = '\0';
+              USB_Send_String(frame);
+          }
+      }
 #endif
 
       // LED 状态指示
@@ -360,9 +472,8 @@ int main(void)
           HAL_GPIO_TogglePin(LEDG_GPIO_Port, LEDG_Pin);
           last_toggle = HAL_GetTick();
       }
-
-      /* USER CODE END 3 */
   }
+  /* USER CODE END 3 */
 }
 
 /**
@@ -424,6 +535,30 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance != TIM2) {
+        return;
+    }
+
+    switch (htim->Channel) {
+        case HAL_TIM_ACTIVE_CHANNEL_1:
+            phase_last_capture[0] = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+            phase_capture_valid[0] = 1U;
+            break;
+        case HAL_TIM_ACTIVE_CHANNEL_2:
+            phase_last_capture[1] = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
+            phase_capture_valid[1] = 1U;
+            break;
+        case HAL_TIM_ACTIVE_CHANNEL_3:
+            phase_last_capture[2] = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_3);
+            phase_capture_valid[2] = 1U;
+            break;
+        default:
+            break;
+    }
+}
 
 /* USER CODE END 4 */
 

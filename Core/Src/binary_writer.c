@@ -105,3 +105,17 @@ int BinaryWriter_AppendStats(uint8_t *out, size_t out_size, size_t *off,
     return BinaryWriter_AppendFrame(out, out_size, off, BINARY_FRAME_TYPE_STATS,
                                     seq, tick_ms, payload, (uint16_t)poff);
 }
+
+int BinaryWriter_AppendPhase(uint8_t *out, size_t out_size, size_t *off,
+                             uint32_t seq, uint32_t tick_ms,
+                             const uint32_t phase_us[3])
+{
+    uint8_t payload[12];
+    size_t poff = 0;
+
+    BinaryWriter_PutU32(payload, &poff, phase_us[0]);
+    BinaryWriter_PutU32(payload, &poff, phase_us[1]);
+    BinaryWriter_PutU32(payload, &poff, phase_us[2]);
+    return BinaryWriter_AppendFrame(out, out_size, off, BINARY_FRAME_TYPE_PHASE,
+                                    seq, tick_ms, payload, (uint16_t)poff);
+}

@@ -81,3 +81,15 @@ int CSV_AppendCRLF(char *out, size_t out_size, size_t *off)
 {
     return CSV_AppendString(out, out_size, off, "\r\n");
 }
+
+int CSV_AppendPhase(char *out, size_t out_size, size_t *off,
+                    const uint32_t phase_us[3])
+{
+    return CSV_AppendString(out, out_size, off, "PHASE,") &&
+           CSV_AppendU32(out, out_size, off, phase_us[0]) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendU32(out, out_size, off, phase_us[1]) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendU32(out, out_size, off, phase_us[2]) &&
+           CSV_AppendCRLF(out, out_size, off);
+}
