@@ -42,6 +42,8 @@ extern "C" {
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
 
+extern uint32_t g_device_id;
+
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/

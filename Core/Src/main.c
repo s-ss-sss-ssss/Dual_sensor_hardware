@@ -60,6 +60,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+uint32_t g_device_id;
 icm42670_raw_t imu;
 icm42670_t icm = {
     .hspi = &hspi1,
@@ -91,6 +92,25 @@ static void MPU_Config(void);
 #ifndef SENSOR_OUTPUT_FORMAT
 #define SENSOR_OUTPUT_FORMAT SENSOR_OUTPUT_FORMAT_BINARY
 #endif
+
+static uint32_t DeviceId_FromUID(void)
+{
+    const uint32_t uid[3] = {
+        HAL_GetUIDw0(), HAL_GetUIDw1(), HAL_GetUIDw2()
+    };
+    uint32_t crc = 0xFFFFFFFFU;
+
+    /* CRC-32/ISO-HDLC over w0, w1, w2, each serialized little-endian. */
+    for (size_t word = 0; word < 3U; word++) {
+        for (uint32_t byte = 0; byte < 4U; byte++) {
+            crc ^= (uid[word] >> (8U * byte)) & 0xFFU;
+            for (uint32_t bit = 0; bit < 8U; bit++) {
+                crc = (crc >> 1) ^ ((crc & 1U) ? 0xEDB88320U : 0U);
+            }
+        }
+    }
+    return crc ^ 0xFFFFFFFFU;
+}
 
 static uint32_t PhaseCapture_EnterCritical(void)
 {
@@ -128,7 +148,7 @@ static void PhaseCapture_Start(void)
 }
 
 static uint32_t PhaseCapture_Sample(
-    uint32_t phase_age_us[PHASE_CAPTURE_CHANNEL_COUNT])
+    uint32_t phase_age_us[PHASE_CAPTURE_CHANNEL_COUNT], uint32_t *sample_us)
 {
     static const uint32_t channels[PHASE_CAPTURE_CHANNEL_COUNT] = {
         TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3
@@ -143,6 +163,7 @@ static uint32_t PhaseCapture_Sample(
     uint32_t primask = PhaseCapture_EnterCritical();
 
     sample_count = __HAL_TIM_GET_COUNTER(&htim2);
+    *sample_us = sample_count;
     sample_tick_ms = HAL_GetTick();
     for (uint32_t i = 0; i < PHASE_CAPTURE_CHANNEL_COUNT; i++) {
         captured[i] = phase_last_capture[i];
@@ -180,7 +201,7 @@ static int USB_CDC_IsBusy(void)
     return (hcdc != NULL && hcdc->TxState != 0U);
 }
 
-static void USB_Send_Buffer(const uint8_t *buf, uint16_t len)
+static int USB_Send_Buffer(const uint8_t *buf, uint16_t len)
 {
     uint16_t sent = 0;
 
@@ -190,31 +211,36 @@ static void USB_Send_Buffer(const uint8_t *buf, uint16_t len)
         uint32_t start = HAL_GetTick();
         while (USB_CDC_IsBusy()) {
             if ((HAL_GetTick() - start) > 100U) {
-                return;
+                return 0;
             }
         }
 
         start = HAL_GetTick();
-        while (CDC_Transmit_FS((uint8_t *)(buf + sent), chunk) == USBD_BUSY) {
+        uint8_t result;
+        while ((result = CDC_Transmit_FS((uint8_t *)(buf + sent), chunk)) == USBD_BUSY) {
             if ((HAL_GetTick() - start) > 100U) {
-                return;
+                return 0;
             }
+        }
+        if (result != USBD_OK) {
+            return 0;
         }
 
         start = HAL_GetTick();
         while (USB_CDC_IsBusy()) {
             if ((HAL_GetTick() - start) > 100U) {
-                return;
+                return 0;
             }
         }
 
         sent += chunk;
     }
+    return 1;
 }
 
-void USB_Send_Raw(const uint8_t *buf, uint16_t len)
+int USB_Send_Raw(const uint8_t *buf, uint16_t len)
 {
-    USB_Send_Buffer(buf, len);
+    return USB_Send_Buffer(buf, len);
 }
 
 void USB_Send_String(char *str)
@@ -242,7 +268,9 @@ static void USB_Send_PrintBuffer(char *ptr, int len)
 int _write(int file, char *ptr, int len)
 {
     (void)file;
+#if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_CSV
     USB_Send_PrintBuffer(ptr, len);
+#endif
     HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, 100);
     return len;
 }
@@ -292,6 +320,8 @@ int main(void)
   MX_I2C3_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+
+  g_device_id = DeviceId_FromUID();
 
   HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(LEDG_GPIO_Port, LEDG_Pin, GPIO_PIN_SET);
@@ -360,68 +390,80 @@ int main(void)
 #endif
       uint32_t phase_us[PHASE_CAPTURE_CHANNEL_COUNT];
       uint32_t phase_tick_ms;
+      uint32_t round_start_us;
       int n = 0;
 
-      phase_tick_ms = PhaseCapture_Sample(phase_us);
+      phase_tick_ms = PhaseCapture_Sample(phase_us, &round_start_us);
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
-      static uint32_t binary_seq = 0;
+      static uint32_t round_seq = 0;
+      static uint32_t record_seq = 0;
       static uint32_t ak_frames = 0;
       static uint32_t tmag_frames = 0;
       static uint32_t icm_frames = 0;
       static uint32_t skipped = 0;
       static uint32_t errors = 0;
+      static uint32_t usb_send_failures = 0;
+      static uint32_t pending_usb_failures = 0;
       static uint32_t last_stats_ms = 0;
+      size_t off = 0;
+      int build_ok = BinaryWriter_BeginRound(binary_frame, sizeof(binary_frame),
+                                             &off, round_seq++, phase_tick_ms,
+                                             round_start_us);
 
 #if SENSOR_OUTPUT_ICM
-      n = ICM42670_ReadToBinary(&icm, binary_frame, sizeof(binary_frame),
-                                &binary_seq, &icm_frames, &skipped, &errors);
-      if (n > 0) {
-          USB_Send_Raw(binary_frame, (uint16_t)n);
-      }
+      n = ICM42670_ReadToBinary(&icm, binary_frame + off,
+                                sizeof(binary_frame) - off,
+                                &record_seq, &icm_frames, &skipped, &errors);
+      if (n > 0) off += (size_t)n;
 #endif
 
 #if SENSOR_OUTPUT_AK
-      n = Sensor_AK09973D_ReadToBinary(binary_frame, sizeof(binary_frame),
-                                       &binary_seq, &ak_frames, &skipped, &errors);
-      if (n > 0) {
-          USB_Send_Raw(binary_frame, (uint16_t)n);
-      }
+      n = Sensor_AK09973D_ReadToBinary(binary_frame + off,
+                                       sizeof(binary_frame) - off,
+                                       &record_seq, &ak_frames, &skipped, &errors);
+      if (n > 0) off += (size_t)n;
 #endif
 
 #if SENSOR_OUTPUT_TMAG
       {
-          n = Sensor_TMAG3001_ReadAllToBinary(binary_frame, sizeof(binary_frame),
-                                              &binary_seq, &tmag_frames,
+          n = Sensor_TMAG3001_ReadAllToBinary(binary_frame + off,
+                                              sizeof(binary_frame) - off,
+                                              &record_seq, &tmag_frames,
                                               &skipped, &errors);
-
-          if (n > 0) {
-              USB_Send_Raw(binary_frame, (uint16_t)n);
-          }
+          if (n > 0) off += (size_t)n;
       }
 #endif
 
-      {
-          size_t off = 0;
-          if (BinaryWriter_AppendPhase(binary_frame, sizeof(binary_frame), &off,
-                                       binary_seq++, phase_tick_ms, phase_us)) {
-              USB_Send_Raw(binary_frame, (uint16_t)off);
-          }
+      if (pending_usb_failures != 0U) {
+          build_ok &= BinaryWriter_AppendError(binary_frame, sizeof(binary_frame), &off,
+                                                record_seq++, HAL_GetTick(),
+                                                BINARY_ERR_SOURCE_USB, 1U,
+                                                usb_send_failures);
       }
+      build_ok &= BinaryWriter_AppendPhase(binary_frame, sizeof(binary_frame), &off,
+                                           record_seq++, phase_tick_ms, phase_us);
 
       uint32_t now = HAL_GetTick();
       if ((now - last_stats_ms) >= 1000U) {
-          size_t off = 0;
-          if (BinaryWriter_AppendStats(binary_frame, sizeof(binary_frame), &off,
-                                       binary_seq++, now,
-                                       ak_frames, tmag_frames, icm_frames,
-                                       skipped, errors)) {
-              USB_Send_Raw(binary_frame, (uint16_t)off);
-                                       }
+          build_ok &= BinaryWriter_AppendStats(binary_frame, sizeof(binary_frame), &off,
+                                               record_seq++, now,
+                                               ak_frames, tmag_frames, icm_frames,
+                                               skipped, errors, g_device_id);
           last_stats_ms = now;
+      }
+      if (!build_ok || !BinaryWriter_EndRound(binary_frame, sizeof(binary_frame), &off)) {
+          errors++;
+      } else if (!USB_Send_Raw(binary_frame, (uint16_t)off)) {
+          errors++;
+          usb_send_failures++;
+          pending_usb_failures++;
+      } else {
+          pending_usb_failures = 0U;
       }
 
 #else
       (void)phase_tick_ms;
+      (void)round_start_us;
 #if SENSOR_OUTPUT_ICM
       n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
       if (n > 0) {

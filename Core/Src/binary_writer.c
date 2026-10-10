@@ -1,4 +1,30 @@
 #include "binary_writer.h"
+#include "tim.h"
+
+enum { ROUND_HEADER_LEN = 14, ROUND_CRC_LEN = 2 };
+static uint32_t round_start_us;
+static int round_failed;
+
+int BinaryWriter_BeginRound(uint8_t *out, size_t out_size, size_t *off,
+                            uint32_t round_seq, uint32_t tick_ms,
+                            uint32_t start_us)
+{
+    round_failed = 1;
+    if (out == NULL || off == NULL || out_size < ROUND_HEADER_LEN + ROUND_CRC_LEN) {
+        return 0;
+    }
+    *off = 0;
+    out[(*off)++] = BINARY_FRAME_SYNC0;
+    out[(*off)++] = BINARY_FRAME_SYNC1;
+    out[(*off)++] = BINARY_FRAME_VERSION;
+    out[(*off)++] = BINARY_FRAME_TYPE_ROUND;
+    BinaryWriter_PutU32(out, off, round_seq);
+    BinaryWriter_PutU32(out, off, tick_ms);
+    BinaryWriter_PutU16(out, off, 0U);
+    round_start_us = start_us;
+    round_failed = 0;
+    return 1;
+}
 
 static uint16_t crc16_ccitt_false(const uint8_t *data, size_t len)
 {
@@ -46,31 +72,47 @@ int BinaryWriter_AppendFrame(uint8_t *out, size_t out_size, size_t *off,
                              uint8_t type, uint32_t seq, uint32_t tick_ms,
                              const uint8_t *payload, uint16_t payload_len)
 {
-    const size_t header_len = 2U + 1U + 1U + 4U + 4U + 2U;
-    const size_t total_len = header_len + payload_len + 2U;
-    size_t start = *off;
+    const int sensor = type == BINARY_FRAME_TYPE_AK ||
+                       type == BINARY_FRAME_TYPE_TMAG ||
+                       type == BINARY_FRAME_TYPE_ICM;
+    const size_t record_len = 1U + 2U + (sensor ? 4U : 0U) + payload_len;
 
-    if (out == NULL || off == NULL || payload == NULL) {
+    (void)seq;
+    (void)tick_ms;
+    if (out == NULL || off == NULL || payload == NULL || round_failed ||
+        record_len > UINT16_MAX) {
+        round_failed = 1;
         return 0;
     }
-    if ((out_size - start) < total_len) {
+    if (*off > out_size || record_len + ROUND_CRC_LEN > out_size - *off) {
+        round_failed = 1;
         return 0;
     }
-
-    out[(*off)++] = BINARY_FRAME_SYNC0;
-    out[(*off)++] = BINARY_FRAME_SYNC1;
-    out[(*off)++] = BINARY_FRAME_VERSION;
     out[(*off)++] = type;
-    BinaryWriter_PutU32(out, off, seq);
-    BinaryWriter_PutU32(out, off, tick_ms);
-    BinaryWriter_PutU16(out, off, payload_len);
+    BinaryWriter_PutU16(out, off, (uint16_t)(record_len - 3U));
+    if (sensor) {
+        BinaryWriter_PutU32(out, off,
+                            __HAL_TIM_GET_COUNTER(&htim2) - round_start_us);
+    }
 
     for (uint16_t i = 0; i < payload_len; i++) {
         out[(*off)++] = payload[i];
     }
 
-    uint16_t crc = crc16_ccitt_false(&out[start + 2U], total_len - 4U);
-    BinaryWriter_PutU16(out, off, crc);
+    return 1;
+}
+
+int BinaryWriter_EndRound(uint8_t *out, size_t out_size, size_t *off)
+{
+    if (round_failed || out == NULL || off == NULL || *off < ROUND_HEADER_LEN ||
+        *off > out_size || out_size - *off < ROUND_CRC_LEN ||
+        *off - ROUND_HEADER_LEN > UINT16_MAX) {
+        round_failed = 1;
+        return 0;
+    }
+    size_t len_off = 12U;
+    BinaryWriter_PutU16(out, &len_off, (uint16_t)(*off - ROUND_HEADER_LEN));
+    BinaryWriter_PutU16(out, off, crc16_ccitt_false(out + 2U, *off - 2U));
     return 1;
 }
 
@@ -92,9 +134,9 @@ int BinaryWriter_AppendStats(uint8_t *out, size_t out_size, size_t *off,
                              uint32_t seq, uint32_t tick_ms,
                              uint32_t ak_frames, uint32_t tmag_frames,
                              uint32_t icm_frames, uint32_t skipped,
-                             uint32_t errors)
+                             uint32_t errors, uint32_t device_id)
 {
-    uint8_t payload[20];
+    uint8_t payload[24];
     size_t poff = 0;
 
     BinaryWriter_PutU32(payload, &poff, ak_frames);
@@ -102,6 +144,7 @@ int BinaryWriter_AppendStats(uint8_t *out, size_t out_size, size_t *off,
     BinaryWriter_PutU32(payload, &poff, icm_frames);
     BinaryWriter_PutU32(payload, &poff, skipped);
     BinaryWriter_PutU32(payload, &poff, errors);
+    BinaryWriter_PutU32(payload, &poff, device_id);
     return BinaryWriter_AppendFrame(out, out_size, off, BINARY_FRAME_TYPE_STATS,
                                     seq, tick_ms, payload, (uint16_t)poff);
 }

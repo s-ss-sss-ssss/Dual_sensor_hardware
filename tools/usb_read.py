@@ -11,7 +11,8 @@ import serial
 import serial.tools.list_ports
 
 SYNC = b"\xA5\x5A"
-VERSION = 1
+VERSION = 2
+MAX_PAYLOAD = 4080
 TYPE_NAMES = {
     0x01: "AK",
     0x02: "TMAG",
@@ -47,76 +48,103 @@ def crc16_ccitt_false(data):
     return crc
 
 
+class RoundParser:
+    def __init__(self):
+        self.buffer = bytearray()
+        self.crc_errors = 0
+        self.dropped = 0
+
+    def feed(self, chunk):
+        self.buffer.extend(chunk)
+        rounds = []
+        while True:
+            start = self.buffer.find(SYNC)
+            if start < 0:
+                keep = 1 if self.buffer.endswith(SYNC[:1]) else 0
+                self.dropped += len(self.buffer) - keep
+                del self.buffer[:len(self.buffer) - keep]
+                break
+            self.dropped += start
+            del self.buffer[:start]
+            if len(self.buffer) < 14:
+                break
+            version, frame_type = self.buffer[2:4]
+            payload_len = struct.unpack_from("<H", self.buffer, 12)[0]
+            if version != VERSION or frame_type != 0x10 or payload_len > MAX_PAYLOAD:
+                self.dropped += 1
+                del self.buffer[0]
+                continue
+            total_len = 16 + payload_len
+            if len(self.buffer) < total_len:
+                break
+            got_crc = struct.unpack_from("<H", self.buffer, total_len - 2)[0]
+            calc_crc = crc16_ccitt_false(self.buffer[2:total_len - 2])
+            if got_crc != calc_crc:
+                self.crc_errors += 1
+                del self.buffer[0]
+                continue
+            seq, tick_ms = struct.unpack_from("<II", self.buffer, 4)
+            payload = bytes(self.buffer[14:total_len - 2])
+            records = []
+            pos = 0
+            while pos + 3 <= len(payload):
+                kind, length = struct.unpack_from("<BH", payload, pos)
+                pos += 3
+                if pos + length > len(payload):
+                    break
+                records.append((kind, payload[pos:pos + length]))
+                pos += length
+            if pos == len(payload):
+                rounds.append((seq, tick_ms, records))
+            else:
+                self.dropped += total_len
+            del self.buffer[:total_len]
+        return rounds
+
+
 def parse_binary_frames(raw):
-    frames = []
-    crc_errors = 0
-    dropped = 0
-    pos = 0
-
-    while pos < len(raw):
-        start = raw.find(SYNC, pos)
-        if start < 0:
-            dropped += len(raw) - pos
-            break
-        dropped += start - pos
-        if len(raw) - start < 16:
-            break
-
-        version = raw[start + 2]
-        frame_type = raw[start + 3]
-        seq = struct.unpack_from("<I", raw, start + 4)[0]
-        tick_ms = struct.unpack_from("<I", raw, start + 8)[0]
-        payload_len = struct.unpack_from("<H", raw, start + 12)[0]
-        total_len = 14 + payload_len + 2
-
-        if payload_len > 128:
-            pos = start + 1
-            continue
-        if len(raw) - start < total_len:
-            break
-
-        payload_start = start + 14
-        payload_end = payload_start + payload_len
-        payload = raw[payload_start:payload_end]
-        got_crc = struct.unpack_from("<H", raw, payload_end)[0]
-        calc_crc = crc16_ccitt_false(raw[start + 2:payload_end])
-
-        if version != VERSION or got_crc != calc_crc:
-            crc_errors += 1
-            pos = start + 1
-            continue
-
-        frames.append((frame_type, seq, tick_ms, payload))
-        pos = start + total_len
-
-    return frames, crc_errors, dropped
+    parser = RoundParser()
+    rounds = parser.feed(raw)
+    return rounds, parser.crc_errors, parser.dropped
 
 
 def decode_frame(frame):
     frame_type, seq, tick_ms, payload = frame
+    if frame_type in (0x01, 0x02, 0x03):
+        if len(payload) < 4:
+            return "INVALID", "INVALID", "short sensor record"
+        offset_us = struct.unpack_from("<I", payload)[0]
+        payload = payload[4:]
+    else:
+        offset_us = None
+    when = f"round={seq} t={tick_ms} done_us={offset_us}" if offset_us is not None else f"round={seq} t={tick_ms}"
     if frame_type == 0x01 and len(payload) == 11:
         bus, mask, hx, hy, hz, status, err, dor = struct.unpack("<BBhhhBBB", payload)
         key = f"Bus{bus}_Mask{mask:02X}"
-        return "AK", key, f"AK seq={seq} t={tick_ms} {key} h=({hx},{hy},{hz}) st={status} err={err} dor={dor}"
+        return "AK", key, f"AK {when} {key} h=({hx},{hy},{hz}) st={status} err={err} dor={dor}"
     if frame_type == 0x02 and len(payload) == 10:
         ch, addr, x, y, z, status, flags = struct.unpack("<BBhhhBB", payload)
         key = f"CH{ch}_{addr:02X}"
-        return "TMAG", key, f"TMAG seq={seq} t={tick_ms} {key} xyz=({x},{y},{z}) st={status} flags={flags}"
+        return "TMAG", key, f"TMAG {when} {key} xyz=({x},{y},{z}) st={status} flags={flags}"
     if frame_type == 0x03 and len(payload) == 14:
         ax, ay, az, gx, gy, gz, temp = struct.unpack("<hhhhhhh", payload)
-        return "ICM", "ICM", f"ICM seq={seq} t={tick_ms} acc=({ax},{ay},{az}) gyr=({gx},{gy},{gz}) temp={temp}"
+        return "ICM", "ICM", f"ICM {when} acc=({ax},{ay},{az}) gyr=({gx},{gy},{gz}) temp={temp}"
     if frame_type == 0x04 and len(payload) == 12:
         ch1_us, ch2_us, ch3_us = struct.unpack("<III", payload)
-        return "PHASE", "PHASE", f"PHASE seq={seq} t={tick_ms} age_us=({ch1_us},{ch2_us},{ch3_us})"
+        return "PHASE", "PHASE", f"PHASE {when} age_us=({ch1_us},{ch2_us},{ch3_us})"
     if frame_type == 0xE0 and len(payload) == 7:
         source, code, detail = struct.unpack("<BHI", payload)
         key = f"SRC{source}"
-        return "ERR", key, f"ERR seq={seq} t={tick_ms} src={source} code={code} detail=0x{detail:08X}"
-    if frame_type == 0xF0 and len(payload) == 20:
-        ak, tmag, icm, skipped, errors = struct.unpack("<IIIII", payload)
-        return "STATS", "STATS", f"STATS seq={seq} t={tick_ms} ak={ak} tmag={tmag} icm={icm} skipped={skipped} errors={errors}"
+        return "ERR", key, f"ERR {when} src={source} code={code} detail=0x{detail:08X}"
+    if frame_type == 0xF0 and len(payload) in (20, 24):
+        ak, tmag, icm, skipped, errors = struct.unpack_from("<IIIII", payload)
+        device = ""
+        if len(payload) == 24:
+            device_id = struct.unpack_from("<I", payload, 20)[0]
+            device = f" device_id=0x{device_id:08X}"
+        return "STATS", "STATS", f"STATS {when} ak={ak} tmag={tmag} icm={icm} skipped={skipped} errors={errors}{device}"
     name = TYPE_NAMES.get(frame_type, f"0x{frame_type:02X}")
-    return name, name, f"{name} seq={seq} t={tick_ms} payload_len={len(payload)}"
+    return name, name, f"{name} {when} payload_len={len(payload)}"
 
 
 def read_raw(ser, duration):
@@ -141,14 +169,14 @@ def analyze_binary(raw, elapsed):
     last_seq = None
     samples = []
 
-    for frame in frames:
-        name, key, text = decode_frame(frame)
-        counts[name] = counts.get(name, 0) + 1
-        sensors.setdefault(name, {})
-        sensors[name][key] = sensors[name].get(key, 0) + 1
-        if len(samples) < 8:
-            samples.append(text)
-        seq = frame[1]
+    for seq, tick_ms, records in frames:
+        for kind, payload in records:
+            name, key, text = decode_frame((kind, seq, tick_ms, payload))
+            counts[name] = counts.get(name, 0) + 1
+            sensors.setdefault(name, {})
+            sensors[name][key] = sensors[name].get(key, 0) + 1
+            if len(samples) < 8:
+                samples.append(text)
         if last_seq is not None and seq != ((last_seq + 1) & 0xFFFFFFFF):
             seq_jumps += 1
         last_seq = seq
@@ -157,7 +185,7 @@ def analyze_binary(raw, elapsed):
     print("Binary 分析结果")
     print("=" * 60)
     print(f"总 bytes: {len(raw)}")
-    print(f"有效帧: {len(frames)}")
+    print(f"有效整轮帧: {len(frames)} ({len(frames) / elapsed:.2f} rounds/s)")
     print(f"CRC 错误: {crc_errors}")
     print(f"跳过非二进制 bytes: {dropped}")
     print(f"seq 跳变: {seq_jumps}")
