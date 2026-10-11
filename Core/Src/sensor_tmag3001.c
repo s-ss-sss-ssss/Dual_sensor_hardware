@@ -7,6 +7,7 @@
 #include "csv_writer.h"
 #include "binary_writer.h"
 #include "sensor_tmag3001.h"
+#include "tmag_debug.h"
 #include "tca9548.h"
 
 extern I2C_HandleTypeDef hi2c3;
@@ -445,6 +446,7 @@ static int tmag_read_channel_to_binary(uint8_t tca_ch_mask, uint8_t *out,
 // TMAG硬件复位：通过I2C3_RESET线复位TCA Mux和所有TMAG传感器
 static void tmag_hardware_reset(void)
 {
+    TMAG_INIT_LOG("[TMAG INIT] RESET I2C3/TCA PC8 low=300ms high=300ms\r\n");
     // Force-reset I2C3 peripheral before DeInit to avoid hanging on stuck bus
     __HAL_RCC_I2C3_FORCE_RESET();
     HAL_Delay(5);
@@ -476,8 +478,20 @@ void Sensor_TMAG3001_Init_All(void)
 
     tmag_hardware_reset();
 
+    TMAG_INIT_LOG("[TMAG INIT] bus=I2C3 timing=0x%08lX kernel_hz=%lu SCL=%d SDA=%d mask=0x%02X\r\n",
+                  (unsigned long)hi2c3.Instance->TIMINGR,
+                  (unsigned long)HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_I2C3),
+                  (int)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8),
+                  (int)HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_9),
+                  (unsigned int)TMAG3001_ACTIVE_TCA_MASK);
+
     // Test TCA
-    if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0) != HAL_OK) {
+    HAL_StatusTypeDef tca_status = TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+    uint32_t tca_error = HAL_I2C_GetError(&hi2c3);
+    TMAG_INIT_LOG("[TMAG INIT] TCA addr=0x%02X mask=0x00 hal=%d err=0x%08lX\r\n",
+                  (unsigned int)TMAG3001_TCA_ADDR_7B, (int)tca_status,
+                  (unsigned long)tca_error);
+    if (tca_status != HAL_OK) {
         printf("TMAG: TCA not responding - abort\r\n");
         fflush(stdout);
         return;
@@ -499,7 +513,14 @@ void Sensor_TMAG3001_Init_All(void)
             idx = ch_start_idx;
 
         // Select TCA channel directly (no prior deselect needed)
-        if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, mask) != HAL_OK) {
+        tca_status = TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, mask);
+        tca_error = HAL_I2C_GetError(&hi2c3);
+        TMAG_INIT_LOG("[TMAG INIT] CH%u mask=0x%02X select try=%d hal=%d err=0x%08lX SCL=%d SDA=%d\r\n",
+                      (unsigned int)ch, (unsigned int)mask, ch_attempt + 1,
+                      (int)tca_status, (unsigned long)tca_error,
+                      (int)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8),
+                      (int)HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_9));
+        if (tca_status != HAL_OK) {
             printf("TMAG CH%d: TCA select FAIL\r\n", ch);
             fflush(stdout);
             tmag_hardware_reset();
@@ -511,16 +532,31 @@ void Sensor_TMAG3001_Init_All(void)
             TMAG3001_Instance_t *inst = &g_tmag_list[idx];
             uint8_t addr = g_tmag_addrs[sub];
 
-            if (TMAG3001_Init(&inst->dev, &hi2c3, addr) == HAL_OK) {
+            TMAG_INIT_LOG("[TMAG INIT] CH%u addr=0x%02X BEGIN\r\n",
+                          (unsigned int)ch, (unsigned int)addr);
+            HAL_StatusTypeDef init_status = TMAG3001_Init(&inst->dev, &hi2c3, addr);
+            uint32_t init_error = HAL_I2C_GetError(&hi2c3);
+            TMAG_INIT_LOG("[TMAG INIT] CH%u addr=0x%02X RESULT %s hal=%d err=0x%08lX\r\n",
+                          (unsigned int)ch, (unsigned int)addr,
+                          init_status == HAL_OK ? "OK" : "FAIL", (int)init_status,
+                          (unsigned long)init_error);
+            if (init_status == HAL_OK) {
                 inst->tca_ch_mask = mask;
                 inst->addr7 = addr;
                 inst->i2c = &hi2c3;
                 inst->inited = 1;
                 ch_ok++;
             } else {
-                TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+                tca_status = TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+                tca_error = HAL_I2C_GetError(&hi2c3);
+                TMAG_INIT_LOG("[TMAG INIT] CH%u retry deselect hal=%d err=0x%08lX\r\n",
+                              (unsigned int)ch, (int)tca_status, (unsigned long)tca_error);
                 HAL_Delay(5);
-                TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, mask);
+                tca_status = TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, mask);
+                tca_error = HAL_I2C_GetError(&hi2c3);
+                TMAG_INIT_LOG("[TMAG INIT] CH%u retry reselect mask=0x%02X hal=%d err=0x%08lX\r\n",
+                              (unsigned int)ch, (unsigned int)mask,
+                              (int)tca_status, (unsigned long)tca_error);
                 HAL_Delay(20);
             }
             idx++;

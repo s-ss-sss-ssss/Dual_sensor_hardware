@@ -1,4 +1,5 @@
 #include "tmag3001.h"
+#include "tmag_debug.h"
 
 // TMAG3001 standard register access uses a write of the register pointer
 // followed by a repeated START read. The device auto-increments the pointer.
@@ -43,6 +44,11 @@ static HAL_StatusTypeDef read_mfg_id_retry(tmag3001_t *dev, uint16_t *out_mfg)
 
     for (int i = 0; i < TMAG_PROBE_RETRIES; i++) {
         last = read_mfg_id(dev, out_mfg);
+        uint32_t error = HAL_I2C_GetError(dev->hi2c);
+        TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X MFG try=%d hal=%d err=0x%08lX id=0x%04X\r\n",
+                      (unsigned int)dev->addr7, i + 1, (int)last,
+                      (unsigned long)error,
+                      (unsigned int)(last == HAL_OK ? *out_mfg : 0xFFFFU));
         if (last == HAL_OK && *out_mfg == 0x5449) {
             return HAL_OK;
         }
@@ -56,16 +62,27 @@ static HAL_StatusTypeDef write_checked(tmag3001_t *dev, uint8_t reg, uint8_t val
 {
     uint8_t rb = 0;
     HAL_StatusTypeDef s = write_reg(dev, reg, val);
+    uint32_t error = HAL_I2C_GetError(dev->hi2c);
     if (s != HAL_OK) {
+        TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X WRITE FAIL reg=0x%02X wr=0x%02X hal=%d err=0x%08lX\r\n",
+                      (unsigned int)dev->addr7, (unsigned int)reg,
+                      (unsigned int)val, (int)s, (unsigned long)error);
         return s;
     }
 
     HAL_Delay(1);
     s = read_reg(dev, reg, &rb);
+    error = HAL_I2C_GetError(dev->hi2c);
     if (s != HAL_OK) {
+        TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X READBACK FAIL reg=0x%02X wr=0x%02X hal=%d err=0x%08lX\r\n",
+                      (unsigned int)dev->addr7, (unsigned int)reg,
+                      (unsigned int)val, (int)s, (unsigned long)error);
         return s;
     }
 
+    TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X VERIFY %s reg=0x%02X wr=0x%02X rd=0x%02X\r\n",
+                  (unsigned int)dev->addr7, rb == val ? "OK" : "FAIL",
+                  (unsigned int)reg, (unsigned int)val, (unsigned int)rb);
     return (rb == val) ? HAL_OK : HAL_ERROR;
 }
 
@@ -76,15 +93,23 @@ static HAL_StatusTypeDef wait_result_ready(tmag3001_t *dev)
 
     do {
         HAL_StatusTypeDef s = read_reg(dev, TMAG3001_REG_CONV_STATUS, &status);
+        uint32_t error = HAL_I2C_GetError(dev->hi2c);
         if (s != HAL_OK) {
+            TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X READY READ FAIL hal=%d err=0x%08lX\r\n",
+                          (unsigned int)dev->addr7, (int)s, (unsigned long)error);
             return s;
         }
         if ((status & TMAG3001_STATUS_DRDY) != 0) {
+            TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X READY OK status=0x%02X\r\n",
+                          (unsigned int)dev->addr7, (unsigned int)status);
             return HAL_OK;
         }
         HAL_Delay(1);
     } while ((HAL_GetTick() - start) < TMAG_READY_TIMEOUT_MS);
 
+    TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X READY TIMEOUT status=0x%02X timeout_ms=%u\r\n",
+                  (unsigned int)dev->addr7, (unsigned int)status,
+                  (unsigned int)TMAG_READY_TIMEOUT_MS);
     return HAL_TIMEOUT;
 }
 
@@ -108,13 +133,20 @@ HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_
     dev->hi2c = hi2c;
     dev->addr7 = addr7;
 
-    write_reg(dev, TMAG3001_REG_DEV_CFG1, TMAG3001_DEV_CFG1_DEFAULT);
+    HAL_StatusTypeDef boot_status = write_reg(dev, TMAG3001_REG_DEV_CFG1, TMAG3001_DEV_CFG1_DEFAULT);
+    uint32_t boot_error = HAL_I2C_GetError(hi2c);
+    TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X BOOT WRITE reg=0x00 wr=0x00 hal=%d err=0x%08lX\r\n",
+                  (unsigned int)addr7, (int)boot_status, (unsigned long)boot_error);
     HAL_Delay(2);
-    write_reg(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_DEV_CFG2_STANDBY);
+    boot_status = write_reg(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_DEV_CFG2_STANDBY);
+    boot_error = HAL_I2C_GetError(hi2c);
+    TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X BOOT WRITE reg=0x01 wr=0x00 hal=%d err=0x%08lX\r\n",
+                  (unsigned int)addr7, (int)boot_status, (unsigned long)boot_error);
     HAL_Delay(2);
 
     uint16_t mfg_id;
     if (read_mfg_id_retry(dev, &mfg_id) != HAL_OK || mfg_id != 0x5449) {
+        TMAG_INIT_LOG("[TMAG INIT] addr=0x%02X ABORT MFG\r\n", (unsigned int)addr7);
         return HAL_ERROR;
     }
 

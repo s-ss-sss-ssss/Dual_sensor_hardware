@@ -31,6 +31,7 @@
 #include "icm42670.h"
 #include "sensor_ak09973d.h"
 #include "sensor_tmag3001.h"
+#include "tmag_debug.h"
 #include "binary_writer.h"
 #include "csv_writer.h"
 #include <stdio.h>
@@ -61,6 +62,7 @@
 
 /* USER CODE BEGIN PV */
 uint32_t g_device_id;
+volatile uint8_t g_tmag_init_debug = TMAG_INIT_DEBUG;
 icm42670_raw_t imu;
 icm42670_t icm = {
     .hspi = &hspi1,
@@ -91,6 +93,9 @@ static void MPU_Config(void);
 #endif
 #ifndef SENSOR_OUTPUT_FORMAT
 #define SENSOR_OUTPUT_FORMAT SENSOR_OUTPUT_FORMAT_BINARY
+#endif
+#ifndef SENSOR_EMPTY_ROUND_PERIOD_MS
+#define SENSOR_EMPTY_ROUND_PERIOD_MS 10U
 #endif
 
 static uint32_t DeviceId_FromUID(void)
@@ -270,6 +275,10 @@ int _write(int file, char *ptr, int len)
     (void)file;
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_CSV
     USB_Send_PrintBuffer(ptr, len);
+#else
+    if (g_tmag_init_debug != 0U) {
+        USB_Send_PrintBuffer(ptr, len);
+    }
 #endif
     HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, 100);
     return len;
@@ -330,7 +339,14 @@ int main(void)
   HAL_Delay(100);
   HAL_Delay(2000);  // 等待 USB CDC 准备好
 
+  /* Give the host time to reopen the USB port after a board reset. */
+  if (g_tmag_init_debug != 0U) {
+      HAL_Delay(TMAG_INIT_DEBUG_WAIT_MS);
+  }
+
   printf("=== MAG READ START ===\r\n");
+  TMAG_INIT_LOG("[TMAG INIT] debug=1 build=%s %s wait_ms=%lu\r\n",
+                __DATE__, __TIME__, (unsigned long)TMAG_INIT_DEBUG_WAIT_MS);
 
   if (ICM42670_Init(&icm) != HAL_OK)
   {
@@ -367,9 +383,11 @@ int main(void)
              ak_count, AK09973D_COUNT, tmag_count, TMAG3001_TOTAL_NUM);
 
       if (ak_count == AK09973D_COUNT && tmag_count == TMAG3001_TOTAL_NUM) {
+          HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_SET);
           break;
       }
       HAL_Delay(500);
+      HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_RESET);
   }
 
   PhaseCapture_Start();
@@ -393,6 +411,9 @@ int main(void)
       uint32_t round_start_us;
       int n = 0;
 
+#if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
+      uint32_t round_start_ms = HAL_GetTick();
+#endif
       phase_tick_ms = PhaseCapture_Sample(phase_us, &round_start_us);
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
       static uint32_t round_seq = 0;
@@ -405,6 +426,9 @@ int main(void)
       static uint32_t usb_send_failures = 0;
       static uint32_t pending_usb_failures = 0;
       static uint32_t last_stats_ms = 0;
+      const uint32_t ak_frames_before = ak_frames;
+      const uint32_t tmag_frames_before = tmag_frames;
+      const uint32_t icm_frames_before = icm_frames;
       size_t off = 0;
       int build_ok = BinaryWriter_BeginRound(binary_frame, sizeof(binary_frame),
                                              &off, round_seq++, phase_tick_ms,
@@ -459,6 +483,17 @@ int main(void)
           pending_usb_failures++;
       } else {
           pending_usb_failures = 0U;
+      }
+
+      /* ERR, PHASE and STATS do not count as sensor records. Include reads,
+       * frame construction and USB waits, even when construction/send fails. */
+      if (ak_frames == ak_frames_before &&
+          tmag_frames == tmag_frames_before &&
+          icm_frames == icm_frames_before) {
+          uint32_t elapsed_ms = HAL_GetTick() - round_start_ms;
+          if (elapsed_ms < SENSOR_EMPTY_ROUND_PERIOD_MS) {
+              HAL_Delay(SENSOR_EMPTY_ROUND_PERIOD_MS - elapsed_ms);
+          }
       }
 
 #else

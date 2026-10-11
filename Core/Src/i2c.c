@@ -21,6 +21,15 @@
 #include "i2c.h"
 
 /* USER CODE BEGIN 0 */
+#ifndef I2C1_TIMING_VALUE
+#define I2C1_TIMING_VALUE 0x00200408U
+#endif
+#ifndef I2C2_TIMING_VALUE
+#define I2C2_TIMING_VALUE 0x00200408U
+#endif
+#ifndef I2C3_TIMING_VALUE
+#define I2C3_TIMING_VALUE 0x00200408U
+#endif
 /* USER CODE END 0 */
 
 I2C_HandleTypeDef hi2c1;
@@ -43,7 +52,7 @@ void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00200408;
+  hi2c1.Init.Timing = I2C1_TIMING_VALUE;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -86,7 +95,7 @@ void MX_I2C2_Init(void)
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x00200408;
+  hi2c2.Init.Timing = I2C2_TIMING_VALUE;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -129,7 +138,7 @@ void MX_I2C3_Init(void)
 
   /* USER CODE END I2C3_Init 1 */
   hi2c3.Instance = I2C3;
-  hi2c3.Init.Timing = 0x007074AF;
+  hi2c3.Init.Timing = I2C3_TIMING_VALUE;
   hi2c3.Init.OwnAddress1 = 0;
   hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
