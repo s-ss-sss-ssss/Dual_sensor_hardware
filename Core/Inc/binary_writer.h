@@ -24,10 +24,12 @@
 #define BINARY_ERR_SOURCE_USB    0x04U
 #define BINARY_ERR_SOURCE_USB    0x04U
 
-/* Begin/End bracket one ROUND frame. AppendFrame writes one length-prefixed
+/* tick_us is the round-start TIM2 counter (1 us/tick); start_us is the same
+ * sample used as the sensor read-done offset baseline. Both wrap at 2^32.
+ * Begin/End bracket one ROUND frame. AppendFrame writes one length-prefixed
  * record into the supplied slice; any append failure invalidates the round. */
 int BinaryWriter_BeginRound(uint8_t *out, size_t out_size, size_t *off,
-                            uint32_t round_seq, uint32_t tick_ms,
+                            uint32_t round_seq, uint32_t tick_us,
                             uint32_t start_us);
 int BinaryWriter_EndRound(uint8_t *out, size_t out_size, size_t *off);
 

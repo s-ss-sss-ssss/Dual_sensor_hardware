@@ -29,23 +29,29 @@ Binary frame layout:
 
 ```text
 sync          u8[2]   0xA5 0x5A
-version       u8      1
-type          u8      1=AK, 2=TMAG, 3=ICM, 0xE0=ERR, 0xF0=STATS
-seq           u32le
-tick_ms       u32le   HAL_GetTick()
+version       u8      2
+type          u8      0x10=ROUND
+round_seq     u32le
+tick_us       u32le   Round-start TIM2 counter (1 us/tick)
 payload_len   u16le
-payload       bytes
+payload       bytes   Records: type u8, length u16le, body
 crc16         u16le   CRC-16/CCITT-FALSE over version..payload
 ```
 
-Payloads:
+The v2 header remains 14 bytes; only the timestamp meaning changes from
+milliseconds to microseconds. TIM2 wraps modulo 2^32 about every 71 min 35 s.
+Host decoders must use the new unit for this firmware. See the
+[communication protocol](doc/host_device_communication_protocol.md).
+
+Record bodies (AK/TMAG/ICM begin with read_done_offset_us u32le):
 
 ```text
 AK    bus u8, mask u8, hx i16, hy i16, hz i16, status u8, err u8, dor u8
 TMAG  ch_mask u8, addr u8, x i16, y i16, z i16, status u8, flags u8
 ICM   ax i16, ay i16, az i16, gx i16, gy i16, gz i16, temp i16
+PHASE ch1_age_us u32, ch2_age_us u32, ch3_age_us u32
 ERR   source u8, code u16, detail u32
-STATS ak_frames u32, tmag_frames u32, icm_frames u32, skipped u32, errors u32
+STATS ak_frames u32, tmag_frames u32, icm_frames u32, skipped u32, errors u32, device_id u32
 ```
 
 Use the reader in auto mode for either stream:

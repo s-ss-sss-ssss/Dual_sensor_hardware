@@ -29,11 +29,11 @@ static int mode, send_ok, icm, sends;
 static FILE *wire;
 static uint32_t HAL_GetTick(void) { return tick; }
 static void HAL_Delay(uint32_t ms) { delay_total += ms; tick += ms; }
-static uint32_t PhaseCapture_Sample(uint32_t *phase, uint32_t *start) {
+static void PhaseCapture_Sample(uint32_t *phase, uint32_t *start) {
     tick += phase_cost;
     phase[0] = phase[1] = phase[2] = UINT32_MAX;
+    test_tim2_count = tick * 1000U;
     *start = test_tim2_count;
-    return tick;
 }
 static int sample(uint8_t type, uint8_t *out, size_t cap, uint32_t *seq,
                   uint32_t *frames, uint32_t *skipped, uint32_t *errors) {
@@ -171,7 +171,7 @@ class EmptyRoundTests(unittest.TestCase):
         self.assertEqual((end, delay), (2020, 1020))
         self.assertEqual([f[0] for f in frames], list(range(102)))
         self.assertEqual([f[1] for f in frames if any(r[0] == 0xF0 for r in f[2])],
-                         [1000, 2000])
+                         [1000000, 2000000])
 
     def test_build_failure_still_limits_empty_round(self):
         end, delay, frames = self.run_round(mode=-2, read=3)

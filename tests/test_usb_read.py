@@ -40,6 +40,7 @@ class ProtocolTests(unittest.TestCase):
             rounds = parser.feed(full[:split]) + parser.feed(full[split:] + sparse)
             self.assertEqual([r[0] for r in rounds], [1, 2])
             self.assertEqual(len(rounds[0][2]), 6)
+        self.assertIn("t_us=123", reader.decode_frame((1, 1, 123, ak[3:]))[2])
         self.assertIn("done_us=10", reader.decode_frame((1, 1, 123, ak[3:]))[2])
         self.assertIn("device_id=0x12345678", reader.decode_frame((0xF0, 1, 123, stats[3:]))[2])
         legacy = reader.decode_frame((0xF0, 1, 123, struct.pack("<IIIII", 1, 2, 3, 4, 5)))

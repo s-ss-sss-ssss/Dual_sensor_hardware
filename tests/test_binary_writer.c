@@ -11,8 +11,11 @@ int main(void)
     uint8_t sensor[11] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
     uint32_t phase[3] = {1, 2, UINT32_MAX};
     size_t off = 0;
-    assert(BinaryWriter_BeginRound(out, sizeof(out), &off, 42, 123, UINT32_MAX - 2));
+    assert(BinaryWriter_BeginRound(out, sizeof(out), &off, 42, UINT32_MAX - 2, UINT32_MAX - 2));
     assert(off == 14);
+    assert(out[2] == 2);
+    assert(out[8] == 0xFD && out[9] == 0xFF &&
+           out[10] == 0xFF && out[11] == 0xFF);
     test_tim2_count = 7;
     size_t record_off = 0;
     assert(BinaryWriter_AppendFrame(out + off, sizeof(out) - off, &record_off,

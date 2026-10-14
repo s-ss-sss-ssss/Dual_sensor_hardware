@@ -6,7 +6,7 @@ static uint32_t round_start_us;
 static int round_failed;
 
 int BinaryWriter_BeginRound(uint8_t *out, size_t out_size, size_t *off,
-                            uint32_t round_seq, uint32_t tick_ms,
+                            uint32_t round_seq, uint32_t tick_us,
                             uint32_t start_us)
 {
     round_failed = 1;
@@ -19,7 +19,7 @@ int BinaryWriter_BeginRound(uint8_t *out, size_t out_size, size_t *off,
     out[(*off)++] = BINARY_FRAME_VERSION;
     out[(*off)++] = BINARY_FRAME_TYPE_ROUND;
     BinaryWriter_PutU32(out, off, round_seq);
-    BinaryWriter_PutU32(out, off, tick_ms);
+    BinaryWriter_PutU32(out, off, tick_us);
     BinaryWriter_PutU16(out, off, 0U);
     round_start_us = start_us;
     round_failed = 0;

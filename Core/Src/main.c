@@ -86,10 +86,10 @@ static void MPU_Config(void);
 #define SENSOR_OUTPUT_ICM   0
 #endif
 #ifndef SENSOR_OUTPUT_AK
-#define SENSOR_OUTPUT_AK    0
+#define SENSOR_OUTPUT_AK    1
 #endif
 #ifndef SENSOR_OUTPUT_TMAG
-#define SENSOR_OUTPUT_TMAG  1
+#define SENSOR_OUTPUT_TMAG  0
 #endif
 #ifndef SENSOR_OUTPUT_FORMAT
 #define SENSOR_OUTPUT_FORMAT SENSOR_OUTPUT_FORMAT_BINARY
@@ -152,7 +152,7 @@ static void PhaseCapture_Start(void)
     }
 }
 
-static uint32_t PhaseCapture_Sample(
+static void PhaseCapture_Sample(
     uint32_t phase_age_us[PHASE_CAPTURE_CHANNEL_COUNT], uint32_t *sample_us)
 {
     static const uint32_t channels[PHASE_CAPTURE_CHANNEL_COUNT] = {
@@ -164,12 +164,10 @@ static uint32_t PhaseCapture_Sample(
     uint32_t captured[PHASE_CAPTURE_CHANNEL_COUNT];
     uint8_t valid[PHASE_CAPTURE_CHANNEL_COUNT];
     uint32_t sample_count;
-    uint32_t sample_tick_ms;
     uint32_t primask = PhaseCapture_EnterCritical();
 
     sample_count = __HAL_TIM_GET_COUNTER(&htim2);
     *sample_us = sample_count;
-    sample_tick_ms = HAL_GetTick();
     for (uint32_t i = 0; i < PHASE_CAPTURE_CHANNEL_COUNT; i++) {
         captured[i] = phase_last_capture[i];
         valid[i] = phase_capture_valid[i];
@@ -193,8 +191,6 @@ static uint32_t PhaseCapture_Sample(
                             ? (sample_count - captured[i])
                             : PHASE_CAPTURE_NO_EDGE;
     }
-
-    return sample_tick_ms;
 }
 
 // USB CDC发送字符串
@@ -407,14 +403,13 @@ int main(void)
       static char frame[3072];
 #endif
       uint32_t phase_us[PHASE_CAPTURE_CHANNEL_COUNT];
-      uint32_t phase_tick_ms;
       uint32_t round_start_us;
       int n = 0;
 
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
       uint32_t round_start_ms = HAL_GetTick();
 #endif
-      phase_tick_ms = PhaseCapture_Sample(phase_us, &round_start_us);
+      PhaseCapture_Sample(phase_us, &round_start_us);
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
       static uint32_t round_seq = 0;
       static uint32_t record_seq = 0;
@@ -431,7 +426,7 @@ int main(void)
       const uint32_t icm_frames_before = icm_frames;
       size_t off = 0;
       int build_ok = BinaryWriter_BeginRound(binary_frame, sizeof(binary_frame),
-                                             &off, round_seq++, phase_tick_ms,
+                                             &off, round_seq++, round_start_us,
                                              round_start_us);
 
 #if SENSOR_OUTPUT_ICM
@@ -465,7 +460,7 @@ int main(void)
                                                 usb_send_failures);
       }
       build_ok &= BinaryWriter_AppendPhase(binary_frame, sizeof(binary_frame), &off,
-                                           record_seq++, phase_tick_ms, phase_us);
+                                           record_seq++, HAL_GetTick(), phase_us);
 
       uint32_t now = HAL_GetTick();
       if ((now - last_stats_ms) >= 1000U) {
@@ -497,7 +492,6 @@ int main(void)
       }
 
 #else
-      (void)phase_tick_ms;
       (void)round_start_us;
 #if SENSOR_OUTPUT_ICM
       n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
