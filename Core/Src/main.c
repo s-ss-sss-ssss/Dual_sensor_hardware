@@ -166,6 +166,8 @@ static void PhaseCapture_Sample(
     uint32_t sample_count;
     uint32_t primask = PhaseCapture_EnterCritical();
 
+    /* 此次 TIM2 读数同时作为轮首时间和三路相位年龄的计算基准。
+     * 快照最近捕获的边沿，不等待新边沿；采样后到来的边沿留给下一轮。 */
     sample_count = __HAL_TIM_GET_COUNTER(&htim2);
     *sample_us = sample_count;
     for (uint32_t i = 0; i < PHASE_CAPTURE_CHANNEL_COUNT; i++) {
@@ -409,6 +411,8 @@ int main(void)
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
       uint32_t round_start_ms = HAL_GetTick();
 #endif
+      /* 每轮时序：轮首相位快照 → ICM → AK → TMAG → 附加记录 → 封帧发送。
+       * 仅执行已启用的传感器读取；round_start_us 为此轮 TIM2 微秒基准，并读相位。 */
       PhaseCapture_Sample(phase_us, &round_start_us);
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
       static uint32_t round_seq = 0;
@@ -430,6 +434,8 @@ int main(void)
                                              round_start_us);
 
 #if SENSOR_OUTPUT_ICM
+      /* ① 相位快照后先读 ICM；读取结束后将有效数据追加到本轮缓冲区。
+       * 记录中的 offset_us 是追加记录时相对轮首的时间，不是内部转换时刻。 */
       n = ICM42670_ReadToBinary(&icm, binary_frame + off,
                                 sizeof(binary_frame) - off,
                                 &record_seq, &icm_frames, &skipped, &errors);
@@ -437,6 +443,8 @@ int main(void)
 #endif
 
 #if SENSOR_OUTPUT_AK
+      /* ② ICM 处理完后依次读取 AK 各通道；未启用 ICM 时从这里开始读传感器。
+       * 各条有效记录分别标记读取完成偏移，因此同轮各通道并非同时采样。 */
       n = Sensor_AK09973D_ReadToBinary(binary_frame + off,
                                        sizeof(binary_frame) - off,
                                        &record_seq, &ak_frames, &skipped, &errors);
@@ -444,6 +452,8 @@ int main(void)
 #endif
 
 #if SENSOR_OUTPUT_TMAG
+      /* ③ AK 处理完后依次读取 TMAG 各通道，数据继续追加到同一轮缓冲区。
+       * 各条有效记录的读取完成偏移仍相对轮首 TIM2 计数计算。 */
       {
           n = Sensor_TMAG3001_ReadAllToBinary(binary_frame + off,
                                               sizeof(binary_frame) - off,
@@ -459,6 +469,8 @@ int main(void)
                                                 BINARY_ERR_SOURCE_USB, 1U,
                                                 usb_send_failures);
       }
+      /* ④ 传感器读取结束后追加 PHASE，但其内容仍是本轮开始时的相位快照。
+       * 此处仅打包，不重新采集相位；有待报告的 USB 错误时先追加 ERR。 */
       build_ok &= BinaryWriter_AppendPhase(binary_frame, sizeof(binary_frame), &off,
                                            record_seq++, HAL_GetTick(), phase_us);
 
@@ -470,6 +482,8 @@ int main(void)
                                                skipped, errors, g_device_id);
           last_stats_ms = now;
       }
+      /* ⑤ 到期时追加 STATS 后，填写整轮长度和 CRC，再通过 USB 发送整轮。
+       * 发送处理结束后才进入轮尾等待/下一轮；此前传感器读取不逐条发送。 */
       if (!build_ok || !BinaryWriter_EndRound(binary_frame, sizeof(binary_frame), &off)) {
           errors++;
       } else if (!USB_Send_Raw(binary_frame, (uint16_t)off)) {
@@ -493,6 +507,8 @@ int main(void)
 
 #else
       (void)round_start_us;
+      /* CSV 调试模式也按 ICM → AK → TMAG 顺序读取已启用的传感器。
+       * 各类数据读完即发送，最后发送轮首相位快照，不聚合为二进制整轮帧。 */
 #if SENSOR_OUTPUT_ICM
       n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
       if (n > 0) {
@@ -609,6 +625,8 @@ void SystemClock_Config(void)
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 {
+    /* 三路上升沿由 TIM2 硬件持续捕获，中断更新最近边沿，与主循环读取异步。
+     * 每轮开始的 PhaseCapture_Sample() 读取这些捕获值并计算边沿年龄。 */
     if (htim->Instance != TIM2) {
         return;
     }
