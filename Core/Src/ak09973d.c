@@ -1,4 +1,5 @@
 #include "ak09973d.h"
+#include "firmware_debug.h"
 
 #define AK09973D_IO_TIMEOUT_MS      100U
 #define AK09973D_RESET_DELAY_MS     5U
@@ -7,9 +8,13 @@
 
 static HAL_StatusTypeDef write_reg(ak09973d_t *dev, uint8_t reg, uint8_t val)
 {
-    return HAL_I2C_Mem_Write(dev->hi2c, dev->addr7 << 1, reg,
+    HAL_StatusTypeDef result = HAL_I2C_Mem_Write(dev->hi2c, dev->addr7 << 1, reg,
                              I2C_MEMADD_SIZE_8BIT, &val, 1,
                              AK09973D_IO_TIMEOUT_MS);
+    AK_INIT_LOG("[AK INIT] addr=0x%02X WRITE reg=0x%02X val=0x%02X hal=%d err=0x%08lX\r\n",
+                dev->addr7, reg, val, (int)result,
+                (unsigned long)HAL_I2C_GetError(dev->hi2c));
+    return result;
 }
 
 static HAL_StatusTypeDef read_reg(ak09973d_t *dev, uint8_t reg, uint8_t *val)
@@ -28,23 +33,39 @@ static HAL_StatusTypeDef read_regs(ak09973d_t *dev, uint8_t reg, uint8_t *buf, u
 
 static HAL_StatusTypeDef write_regs(ak09973d_t *dev, uint8_t reg, const uint8_t *buf, uint16_t len)
 {
-    return HAL_I2C_Mem_Write(dev->hi2c, dev->addr7 << 1, reg,
+    HAL_StatusTypeDef result = HAL_I2C_Mem_Write(dev->hi2c, dev->addr7 << 1, reg,
                              I2C_MEMADD_SIZE_8BIT, (uint8_t *)buf, len,
                              AK09973D_IO_TIMEOUT_MS);
+    AK_INIT_LOG("[AK INIT] addr=0x%02X WRITE reg=0x%02X len=%u hal=%d err=0x%08lX\r\n",
+                dev->addr7, reg, len, (int)result,
+                (unsigned long)HAL_I2C_GetError(dev->hi2c));
+    return result;
 }
 
 static HAL_StatusTypeDef wait_data_ready(ak09973d_t *dev, uint32_t timeout_ms)
 {
     uint32_t start = HAL_GetTick();
+    uint8_t st = 0;
+    HAL_StatusTypeDef last_read = HAL_OK;
+    uint32_t last_error = 0;
 
     do {
-        uint8_t st;
-        if (read_reg(dev, AK09973D_REG_ST, &st) == HAL_OK && (st & AK09973D_ST_DRDY) != 0U) {
+        last_read = read_reg(dev, AK09973D_REG_ST, &st);
+        last_error = HAL_I2C_GetError(dev->hi2c);
+        if (last_read != HAL_OK) {
+            AK_INIT_LOG("[AK INIT] addr=0x%02X READY READ FAIL hal=%d err=0x%08lX\r\n",
+                        dev->addr7, (int)last_read, (unsigned long)last_error);
+        }
+        if (last_read == HAL_OK && (st & AK09973D_ST_DRDY) != 0U) {
+            AK_INIT_LOG("[AK INIT] addr=0x%02X READY OK status=0x%02X\r\n", dev->addr7, st);
             return HAL_OK;
         }
         HAL_Delay(AK09973D_DRDY_POLL_MS);
     } while ((HAL_GetTick() - start) < timeout_ms);
 
+    AK_INIT_LOG("[AK INIT] addr=0x%02X READY TIMEOUT status=0x%02X last_hal=%d err=0x%08lX\r\n",
+                dev->addr7, st, (int)last_read, (unsigned long)last_error);
+    (void)last_error;
     return HAL_TIMEOUT;
 }
 
@@ -54,10 +75,17 @@ HAL_StatusTypeDef AK09973D_Probe(I2C_HandleTypeDef *hi2c, uint8_t addr7, uint8_t
         .hi2c = hi2c,
         .addr7 = addr7
     };
-    uint8_t wia[4];
+    uint8_t wia[4] = {0};
 
-    if (read_regs(&dev, AK09973D_REG_WIA, wia, sizeof(wia)) != HAL_OK) {
+    HAL_StatusTypeDef result = read_regs(&dev, AK09973D_REG_WIA, wia, sizeof(wia));
+    AK_INIT_LOG("[AK INIT] addr=0x%02X WIA hal=%d err=0x%08lX id=0x%02X%02X valid=%u\r\n",
+                addr7, (int)result, (unsigned long)HAL_I2C_GetError(hi2c),
+                wia[0], wia[1], result == HAL_OK);
+    if (result != HAL_OK) {
         return HAL_ERROR;
+    }
+    if (wia[0] != AK09973D_WIA_COMPANY || wia[1] != AK09973D_WIA_DEVICE) {
+        AK_INIT_LOG("[AK INIT] addr=0x%02X ID MISMATCH expected=0x48C1\r\n", addr7);
     }
 
     if (company != NULL) {

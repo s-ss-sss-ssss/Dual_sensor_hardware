@@ -81,6 +81,14 @@ void MX_GPIO_Init(void)
   /*AnalogSwitch Config */
   HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC2, SYSCFG_SWITCH_PC2_CLOSE);
 
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* PA3 provides a weak pull-down only; it is not a ground connection. */
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  /* USER CODE END MX_GPIO_Init_2 */
+
 }
 
 /* USER CODE BEGIN 2 */

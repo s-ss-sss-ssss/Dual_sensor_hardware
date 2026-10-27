@@ -32,6 +32,7 @@
 #include "sensor_ak09973d.h"
 #include "sensor_tmag3001.h"
 #include "tmag_debug.h"
+#include "firmware_debug.h"
 #include "binary_writer.h"
 #include "csv_writer.h"
 #include <stdio.h>
@@ -86,10 +87,10 @@ static void MPU_Config(void);
 #define SENSOR_OUTPUT_ICM   0
 #endif
 #ifndef SENSOR_OUTPUT_AK
-#define SENSOR_OUTPUT_AK    1
+#define SENSOR_OUTPUT_AK    0
 #endif
 #ifndef SENSOR_OUTPUT_TMAG
-#define SENSOR_OUTPUT_TMAG  0
+#define SENSOR_OUTPUT_TMAG  1
 #endif
 #ifndef SENSOR_OUTPUT_FORMAT
 #define SENSOR_OUTPUT_FORMAT SENSOR_OUTPUT_FORMAT_BINARY
@@ -206,10 +207,15 @@ static int USB_CDC_IsBusy(void)
 
 static int USB_Send_Buffer(const uint8_t *buf, uint16_t len)
 {
+    /* CDC owns the submitted storage until completion, including after timeout.
+     * Never submit stack/printf storage directly to the asynchronous endpoint. */
+    static uint8_t tx_storage[4096];
     uint16_t sent = 0;
 
     while (sent < len) {
         uint16_t chunk = len - sent;
+        if (chunk > sizeof(tx_storage)) chunk = sizeof(tx_storage);
+        if (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) return 0;
 
         uint32_t start = HAL_GetTick();
         while (USB_CDC_IsBusy()) {
@@ -218,9 +224,10 @@ static int USB_Send_Buffer(const uint8_t *buf, uint16_t len)
             }
         }
 
+        memcpy(tx_storage, buf + sent, chunk);
         start = HAL_GetTick();
         uint8_t result;
-        while ((result = CDC_Transmit_FS((uint8_t *)(buf + sent), chunk)) == USBD_BUSY) {
+        while ((result = CDC_Transmit_FS(tx_storage, chunk)) == USBD_BUSY) {
             if ((HAL_GetTick() - start) > 100U) {
                 return 0;
             }
@@ -268,10 +275,58 @@ static void USB_Send_PrintBuffer(char *ptr, int len)
     }
 }
 
+#if SENSOR_INIT_DIAG
+static void Debug_ReportIdentity(void)
+{
+    printf("FW,%s,build=%s %s,UID=%08lX%08lX%08lX,device_id_dec=%lu,device_id_hex=0x%08lX\r\n",
+           FIRMWARE_VERSION, __DATE__, __TIME__,
+           (unsigned long)HAL_GetUIDw0(), (unsigned long)HAL_GetUIDw1(),
+           (unsigned long)HAL_GetUIDw2(), (unsigned long)g_device_id,
+           (unsigned long)g_device_id);
+}
+
+static void Debug_ReportSummary(int ak_count, int tmag_count)
+{
+    Debug_ReportIdentity();
+    printf("SUMMARY,uptime_ms=%lu,AK=%d/%d,TMAG=%d/%d,result=%s\r\n",
+           (unsigned long)HAL_GetTick(), ak_count, AK09973D_COUNT,
+           tmag_count, TMAG3001_TOTAL_NUM,
+           ak_count == AK09973D_COUNT && tmag_count == TMAG3001_TOTAL_NUM
+               ? "PASS" : "FAIL");
+    fflush(stdout);
+}
+
+static void Debug_RunInitialization(void)
+{
+    uint32_t start = HAL_GetTick();
+    while (hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED &&
+           HAL_GetTick() - start < 10000U) HAL_Delay(10);
+    if (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED) HAL_Delay(2000);
+    g_tmag_init_debug = 1U;
+    Debug_ReportIdentity();
+    printf("DIAG,BEGIN,AK_then_TMAG,HAL=0:OK/1:ERROR/2:BUSY/3:TIMEOUT\r\n");
+    fflush(stdout);
+
+    Sensor_AK09973D_Init_All();
+    int ak_count = Sensor_AK09973D_GetCount();
+    Sensor_TMAG3001_Init_All();
+    int tmag_count = Sensor_TMAG3001_GetCount();
+    printf("DIAG,DONE\r\n");
+    HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin,
+        ak_count == AK09973D_COUNT && tmag_count == TMAG3001_TOTAL_NUM
+            ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    for (;;) {
+        Debug_ReportSummary(ak_count, tmag_count);
+        HAL_GPIO_TogglePin(LEDG_GPIO_Port, LEDG_Pin);
+        HAL_Delay(2000);
+    }
+}
+#endif
+
 int _write(int file, char *ptr, int len)
 {
     (void)file;
-#if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_CSV
+#if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_CSV || SENSOR_INIT_DIAG
     USB_Send_PrintBuffer(ptr, len);
 #else
     if (g_tmag_init_debug != 0U) {
@@ -333,6 +388,10 @@ int main(void)
   HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(LEDG_GPIO_Port, LEDG_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(LEDB_GPIO_Port, LEDB_Pin, GPIO_PIN_SET);
+
+#if SENSOR_INIT_DIAG
+  Debug_RunInitialization();
+#endif
 
   HAL_Delay(100);
   HAL_Delay(2000);  // 等待 USB CDC 准备好

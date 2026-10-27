@@ -7,7 +7,7 @@
 /* Enable with EXTRA_DEFS="-DTMAG_INIT_DEBUG=1". In debug mode printf is
  * mirrored to USB CDC even when sensor output uses binary ROUND frames. */
 #ifndef TMAG_INIT_DEBUG
-#define TMAG_INIT_DEBUG 0
+#define TMAG_INIT_DEBUG 1
 #endif
 #ifndef TMAG_INIT_DEBUG_WAIT_MS
 #define TMAG_INIT_DEBUG_WAIT_MS 5000U

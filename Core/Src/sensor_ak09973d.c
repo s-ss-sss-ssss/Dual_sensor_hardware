@@ -8,6 +8,7 @@
 #include "binary_writer.h"
 #include "sensor_ak09973d.h"
 #include "tca9548.h"
+#include "firmware_debug.h"
 
 extern I2C_HandleTypeDef hi2c1;
 extern I2C_HandleTypeDef hi2c2;
@@ -133,6 +134,8 @@ static HAL_StatusTypeDef ak_select_channel(uint8_t bus, uint8_t mask)
 {
     I2C_HandleTypeDef *hi2c = get_i2c(bus);
     HAL_StatusTypeDef status = TCA9548_Select(hi2c, AK09973D_TCA_ADDR_7B, mask);
+    AK_INIT_LOG("[AK INIT] bus=I2C%u mask=0x%02X TCA hal=%d err=0x%08lX\r\n",
+                bus, mask, (int)status, (unsigned long)HAL_I2C_GetError(hi2c));
 
     if (status != HAL_OK) {
         if (bus == 1) {
@@ -140,6 +143,8 @@ static HAL_StatusTypeDef ak_select_channel(uint8_t bus, uint8_t mask)
         }
         ak_bus_reset(bus);
         status = TCA9548_Select(hi2c, AK09973D_TCA_ADDR_7B, mask);
+        AK_INIT_LOG("[AK INIT] bus=I2C%u mask=0x%02X TCA RETRY hal=%d err=0x%08lX\r\n",
+                    bus, mask, (int)status, (unsigned long)HAL_I2C_GetError(hi2c));
     }
 
     if (status == HAL_OK && bus == 1 && HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET) {
@@ -147,6 +152,8 @@ static HAL_StatusTypeDef ak_select_channel(uint8_t bus, uint8_t mask)
         i2c1_gpio_bus_clear();
         ak_bus_reset(1);
         status = TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, mask);
+        AK_INIT_LOG("[AK INIT] bus=I2C1 mask=0x%02X TCA BUS-CLEAR hal=%d err=0x%08lX\r\n",
+                    mask, (int)status, (unsigned long)HAL_I2C_GetError(hi2c));
     }
 
     return status;
@@ -196,8 +203,14 @@ void Sensor_AK09973D_Init_All(void)
     ak_bus_reset(1);
     ak_bus_reset(2);
 
-    TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, 0);
-    TCA9548_Select(&hi2c2, AK09973D_TCA_ADDR_7B, 0);
+    for (uint8_t bus = 1; bus <= 2; bus++) {
+        I2C_HandleTypeDef *hi2c = get_i2c(bus);
+        HAL_StatusTypeDef status = TCA9548_Select(hi2c, AK09973D_TCA_ADDR_7B, 0);
+        AK_INIT_LOG("[AK INIT] bus=I2C%u TCA DESELECT hal=%d err=0x%08lX timing=0x%08lX\r\n",
+                    bus, (int)status, (unsigned long)HAL_I2C_GetError(hi2c),
+                    (unsigned long)hi2c->Instance->TIMINGR);
+        (void)status;
+    }
 
     int count = 0;
     int tca_fail_bus1 = 0, tca_fail_bus2 = 0;
@@ -210,6 +223,8 @@ void Sensor_AK09973D_Init_All(void)
         uint8_t addr = g_config[i].addr;
         uint8_t company = 0;
         uint8_t device = 0;
+        AK_INIT_LOG("[AK INIT] bus=I2C%u CH%u mask=0x%02X addr=0x%02X BEGIN\r\n",
+                    g_config[i].i2c_bus, (unsigned int)__builtin_ctz((unsigned int)mask), mask, addr);
         if (g_config[i].i2c_bus == 1) init_bus1++;
         else init_bus2++;
 
@@ -219,6 +234,8 @@ void Sensor_AK09973D_Init_All(void)
                    g_config[i].i2c_bus, mask, hal_status_name(tca), (unsigned long)HAL_I2C_GetError(hi2c));
             if (g_config[i].i2c_bus == 1) tca_fail_bus1++;
             else tca_fail_bus2++;
+            AK_INIT_LOG("[AK INIT] bus=I2C%u mask=0x%02X addr=0x%02X RESULT FAIL stage=TCA\r\n",
+                        g_config[i].i2c_bus, mask, addr);
             continue;
         }
 
@@ -228,6 +245,8 @@ void Sensor_AK09973D_Init_All(void)
                    g_config[i].i2c_bus, mask, company, device, (unsigned long)HAL_I2C_GetError(hi2c));
             if (g_config[i].i2c_bus == 1) dev_fail_bus1++;
             else dev_fail_bus2++;
+            AK_INIT_LOG("[AK INIT] bus=I2C%u mask=0x%02X addr=0x%02X RESULT FAIL stage=WIA\r\n",
+                        g_config[i].i2c_bus, mask, addr);
             continue;
         }
 
@@ -238,6 +257,8 @@ void Sensor_AK09973D_Init_All(void)
                    g_config[i].i2c_bus, mask, hal_status_name(ak), (unsigned long)HAL_I2C_GetError(hi2c));
             if (g_config[i].i2c_bus == 1) dev_fail_bus1++;
             else dev_fail_bus2++;
+            AK_INIT_LOG("[AK INIT] bus=I2C%u mask=0x%02X addr=0x%02X RESULT FAIL stage=INIT\r\n",
+                        g_config[i].i2c_bus, mask, addr);
             continue;
         }
 
@@ -245,6 +266,8 @@ void Sensor_AK09973D_Init_All(void)
         g_valid[count].mask = mask;
         g_valid[count].dev = dev;
         count++;
+        AK_INIT_LOG("[AK INIT] bus=I2C%u mask=0x%02X addr=0x%02X RESULT OK\r\n",
+                    g_config[i].i2c_bus, mask, addr);
 
         TCA9548_Select(hi2c, AK09973D_TCA_ADDR_7B, 0);
     }
