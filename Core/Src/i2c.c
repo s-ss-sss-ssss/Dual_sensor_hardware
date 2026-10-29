@@ -21,14 +21,23 @@
 #include "i2c.h"
 
 /* USER CODE BEGIN 0 */
+/* Conservative diagnostic timing for i2c_ker_ck = D2PCLK1 = 30 MHz.
+ * PRESC=2, SCLDEL=15, SDADEL=2, SCLH=44, SCLL=54:
+ * tPRESC=100 ns, setup delay=1.6 us, hold delay=200 ns,
+ * SCL high/low counters=4.5/5.5 us (before filter/sync delays).
+ * Standard-mode design envelope: rise <= 1000 ns, fall <= 300 ns,
+ * analog filter enabled (50..260 ns), digital filter=0.
+ * Actual SCL is below 100 kHz; verify edges at the sensors as well.
+ * Recalculate if the kernel clock or filter configuration changes.
+ */
 #ifndef I2C1_TIMING_VALUE
-#define I2C1_TIMING_VALUE 0x00200408U
+#define I2C1_TIMING_VALUE 0x20F22C36U
 #endif
 #ifndef I2C2_TIMING_VALUE
-#define I2C2_TIMING_VALUE 0x00200408U
+#define I2C2_TIMING_VALUE 0x20F22C36U
 #endif
 #ifndef I2C3_TIMING_VALUE
-#define I2C3_TIMING_VALUE 0x00200408U
+#define I2C3_TIMING_VALUE 0x20F22C36U
 #endif
 /* USER CODE END 0 */
 
