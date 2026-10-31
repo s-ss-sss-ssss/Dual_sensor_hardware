@@ -23,3 +23,6 @@ int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
                                  uint32_t *errors);
 void Sensor_AK09973D_ReadAll(void);
 int Sensor_AK09973D_GetCount(void);
+
+/* Last binary scan: TCA select + AK read wall time, microseconds. */
+extern uint32_t g_ak_bus_read_us[2];

@@ -47,6 +47,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(legacy[0], "STATS")
         self.assertIn("errors=5", legacy[2])
 
+    def test_temporary_timing_stats(self):
+        payload = struct.pack('<IIIIIIHIII', 1, 2, 3, 4, 5, 0x12345678, 5, 810, 820, 300)
+        result = reader.decode_frame((0xF0, 1, 123, payload))
+        self.assertIn('errormap=0x0005', result[2])
+        self.assertIn('prev_i2c1_us=810', result[2])
+        self.assertIn('prev_i2c2_us=820', result[2])
+        self.assertIn('prev_usb_us=300', result[2])
+
     def test_crc_resync_unknown_and_boundary(self):
         # The firmware's 4096-byte frame limit permits 4080 payload bytes.
         max_frame = frame(3, [record(0x77, b"x" * 4077)])

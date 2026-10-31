@@ -422,6 +422,7 @@ int main(void)
        * 仅执行已启用的传感器读取；round_start_us 为此轮 TIM2 微秒基准，并读相位。 */
       PhaseCapture_Sample(phase_us, &round_start_us);
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
+      static uint32_t previous_timing_us[3] = {0};
       static uint32_t round_seq = 0;
       static uint32_t record_seq = 0;
       static uint32_t ak_frames = 0;
@@ -486,20 +487,32 @@ int main(void)
           build_ok &= BinaryWriter_AppendStats(binary_frame, sizeof(binary_frame), &off,
                                                record_seq++, now,
                                                ak_frames, tmag_frames, icm_frames,
-                                               skipped, errors, g_device_id, g_sensor_errormap);
+                                               skipped, errors, g_device_id, g_sensor_errormap, previous_timing_us);
           last_stats_ms = now;
       }
       /* ⑤ 到期时追加 STATS 后，填写整轮长度和 CRC，再通过 USB 发送整轮。
        * 发送处理结束后才进入轮尾等待/下一轮；此前传感器读取不逐条发送。 */
+      uint32_t usb_start_us;
+      uint32_t usb_elapsed_us = 0;
       if (!build_ok || !BinaryWriter_EndRound(binary_frame, sizeof(binary_frame), &off)) {
           errors++;
-      } else if (!USB_Send_Raw(binary_frame, (uint16_t)off)) {
-          errors++;
-          usb_send_failures++;
-          pending_usb_failures++;
       } else {
-          pending_usb_failures = 0U;
+          usb_start_us = __HAL_TIM_GET_COUNTER(&htim2);
+          int usb_ok = USB_Send_Raw(binary_frame, (uint16_t)off);
+          usb_elapsed_us = (uint32_t)(__HAL_TIM_GET_COUNTER(&htim2) - usb_start_us);
+          if (!usb_ok) {
+              errors++;
+              usb_send_failures++;
+              pending_usb_failures++;
+          } else {
+              pending_usb_failures = 0U;
+          }
       }
+#if SENSOR_OUTPUT_AK
+      previous_timing_us[0] = g_ak_bus_read_us[0];
+      previous_timing_us[1] = g_ak_bus_read_us[1];
+#endif
+      previous_timing_us[2] = usb_elapsed_us;
 
       /* ERR, PHASE and STATS do not count as sensor records. Include reads,
        * frame construction and USB waits, even when construction/send fails. */

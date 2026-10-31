@@ -1,0 +1,31 @@
+# Current STATS body; offsets exclude the 3-byte TLV header.
+record_type: 0xF0
+body_length: 38
+byte_order: little
+fields:
+  - {name: ak_frames,     offset: 0,  type: uint32, unit: records}
+  - {name: tmag_frames,   offset: 4,  type: uint32, unit: records}
+  - {name: icm_frames,    offset: 8,  type: uint32, unit: records}
+  - {name: skipped,       offset: 12, type: uint32, unit: events}
+  - {name: errors,        offset: 16, type: uint32, unit: events}
+  - {name: device_id,     offset: 20, type: uint32, unit: identifier}
+  - {name: errormap,      offset: 24, type: uint16, unit: bitmask}
+  - {name: prev_i2c1_us,  offset: 26, type: uint32, unit: us}
+  - {name: prev_i2c2_us,  offset: 30, type: uint32, unit: us}
+  - {name: prev_usb_us,   offset: 34, type: uint32, unit: us}
+
+# Counters are cumulative; timings are snapshots of the previous round.
+# errormap bit 0..11 maps to sensor ID 1..12; 1 means disabled.
+parsing:
+  record_header: "type:uint8 + body_length:uint16le + body"
+  python: |
+    import struct
+    # body is the STATS body extracted from a validated ROUND frame.
+    assert len(body) == 38
+    names = [
+        'ak_frames', 'tmag_frames', 'icm_frames', 'skipped', 'errors',
+        'device_id', 'errormap', 'prev_i2c1_us', 'prev_i2c2_us', 'prev_usb_us',
+    ]
+    stats = dict(zip(names, struct.unpack('<6IH3I', body)))
+    failed_ids = [i for i in range(1, 13)
+                  if stats['errormap'] & (1 << (i - 1))]

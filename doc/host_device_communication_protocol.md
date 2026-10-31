@@ -85,3 +85,25 @@ failed_ids = None if errormap is None else [
 ```
 
 For example, `errormap=0x0805` means IDs 1, 3 and 12 are disabled, so the red LED is on. Their measurement records are absent; healthy sensors retain their original IDs. A previously received measurement is historical data and must not be reused as a new sample for a missing record.
+
+## Temporary AK timing extension (38-byte STATS)
+
+The existing first 26 bytes remain unchanged. Append three uint32 little-endian fields:
+
+| Body offset | Field | Unit |
+| --- | --- | --- |
+| 26 | prev_i2c1_us | microseconds |
+| 30 | prev_i2c2_us | microseconds |
+| 34 | prev_usb_us | microseconds |
+
+All three describe the immediately preceding acquisition round, not averages over
+one second. First-round values are zero. The two bus fields sum elapsed wall time
+inside TCA-selection and AK 7-byte read calls, including failures/timeouts and
+interrupt preemption, excluding record packing. Disabled sensors are excluded.
+This instrumentation is AK binary-mode only; bus fields are zero when AK is disabled.
+USB time covers USB_Send_Raw, including waiting for readiness/completion or timeout;
+zero means no send attempted if round construction failed. It is not host receive latency.
+Use TIM2 1-us counter subtraction with uint32 wraparound. STATS cadence remains
+approximately once per second; timings are snapshots, not min/max or averages.
+Decode using `struct.unpack_from('<III', payload, 26)` when body length is 38.
+Receivers retain support for old 20/24/26-byte STATS; timing is unknown when absent.

@@ -134,9 +134,9 @@ int BinaryWriter_AppendStats(uint8_t *out, size_t out_size, size_t *off,
                              uint32_t seq, uint32_t tick_ms,
                              uint32_t ak_frames, uint32_t tmag_frames,
                              uint32_t icm_frames, uint32_t skipped,
-                             uint32_t errors, uint32_t device_id, uint16_t errormap)
+                             uint32_t errors, uint32_t device_id, uint16_t errormap, const uint32_t timing_us[3])
 {
-    uint8_t payload[26];
+    uint8_t payload[38];
     size_t poff = 0;
 
     BinaryWriter_PutU32(payload, &poff, ak_frames);
@@ -146,6 +146,7 @@ int BinaryWriter_AppendStats(uint8_t *out, size_t out_size, size_t *off,
     BinaryWriter_PutU32(payload, &poff, errors);
     BinaryWriter_PutU32(payload, &poff, device_id);
     BinaryWriter_PutU16(payload, &poff, errormap);
+    for (unsigned i = 0; i < 3; ++i) BinaryWriter_PutU32(payload, &poff, timing_us[i]);
     return BinaryWriter_AppendFrame(out, out_size, off, BINARY_FRAME_TYPE_STATS,
                                     seq, tick_ms, payload, (uint16_t)poff);
 }

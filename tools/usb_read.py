@@ -136,13 +136,16 @@ def decode_frame(frame):
         source, code, detail = struct.unpack("<BHI", payload)
         key = f"SRC{source}"
         return "ERR", key, f"ERR {when} src={source} code={code} detail=0x{detail:08X}"
-    if frame_type == 0xF0 and len(payload) in (20, 24, 26):
+    if frame_type == 0xF0 and len(payload) in (20, 24, 26, 38):
         ak, tmag, icm, skipped, errors = struct.unpack_from("<IIIII", payload)
         device = ""
         if len(payload) >= 24:
             device_id = struct.unpack_from("<I", payload, 20)[0]
             device = f" device_id=0x{device_id:08X}"
-        device += f" errormap=0x{int.from_bytes(payload[24:26], 'little'):04X}" if len(payload) == 26 else " errormap=unknown"
+        device += f" errormap=0x{int.from_bytes(payload[24:26], 'little'):04X}" if len(payload) >= 26 else " errormap=unknown"
+        if len(payload) == 38:
+            i2c1_us, i2c2_us, usb_us = struct.unpack_from('<III', payload, 26)
+            device += f" prev_i2c1_us={i2c1_us} prev_i2c2_us={i2c2_us} prev_usb_us={usb_us}"
         return "STATS", "STATS", f"STATS {when} ak={ak} tmag={tmag} icm={icm} skipped={skipped} errors={errors}{device}"
     name = TYPE_NAMES.get(frame_type, f"0x{frame_type:02X}")
     return name, name, f"{name} {when} payload_len={len(payload)}"

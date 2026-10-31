@@ -1,3 +1,4 @@
+#include "tim.h"
 #include "sensor_error.h"
 #include "stm32h7xx_hal.h"
 #include <stdio.h>
@@ -10,6 +11,7 @@
 #include "sensor_ak09973d.h"
 #include "tca9548.h"
 
+uint32_t g_ak_bus_read_us[2];
 extern I2C_HandleTypeDef hi2c1;
 extern I2C_HandleTypeDef hi2c2;
 
@@ -331,13 +333,17 @@ int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
                                  uint32_t *errors)
 {
     size_t off = 0;
+    g_ak_bus_read_us[0] = g_ak_bus_read_us[1] = 0;
 
     for (int i = 0; i < AK09973D_COUNT && g_valid[i].dev.hi2c != NULL; i++) {
         unsigned bit = SensorError_AK(g_valid[i].i2c_bus, g_valid[i].mask);
         if (SensorError_Has(bit)) continue;
         I2C_HandleTypeDef *hi2c = get_i2c(g_valid[i].i2c_bus);
 
-        if (ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask) != HAL_OK) {
+        uint32_t io_start = __HAL_TIM_GET_COUNTER(&htim2);
+        HAL_StatusTypeDef io_status = ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask);
+        g_ak_bus_read_us[g_valid[i].i2c_bus - 1] += (uint32_t)(__HAL_TIM_GET_COUNTER(&htim2) - io_start);
+        if (io_status != HAL_OK) {
             SensorError_Failure(bit);
             if (errors != NULL) (*errors)++;
             (void)BinaryWriter_AppendError(out, out_size, &off,
@@ -348,7 +354,10 @@ int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
         }
 
         ak09973d_magdata_t data;
-        if (AK09973D_ReadMagData(&g_valid[i].dev, &data) != HAL_OK) {
+        io_start = __HAL_TIM_GET_COUNTER(&htim2);
+        io_status = AK09973D_ReadMagData(&g_valid[i].dev, &data);
+        g_ak_bus_read_us[g_valid[i].i2c_bus - 1] += (uint32_t)(__HAL_TIM_GET_COUNTER(&htim2) - io_start);
+        if (io_status != HAL_OK) {
             SensorError_Failure(bit);
             if (errors != NULL) (*errors)++;
             (void)BinaryWriter_AppendError(out, out_size, &off,

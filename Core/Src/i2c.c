@@ -21,20 +21,21 @@
 #include "i2c.h"
 
 /* USER CODE BEGIN 0 */
-/* Conservative diagnostic timing for i2c_ker_ck = D2PCLK1 = 30 MHz.
- * PRESC=2, SCLDEL=15, SDADEL=2, SCLH=44, SCLL=54:
- * tPRESC=100 ns, setup delay=1.6 us, hold delay=200 ns,
- * SCL high/low counters=4.5/5.5 us (before filter/sync delays).
- * Standard-mode design envelope: rise <= 1000 ns, fall <= 300 ns,
- * analog filter enabled (50..260 ns), digital filter=0.
- * Actual SCL is below 100 kHz; verify edges at the sensors as well.
- * Recalculate if the kernel clock or filter configuration changes.
+/* AK experimental ~800 kHz target, i2c_ker_ck = 30 MHz, AF on, DNF=0.
+ * TIMINGR=0x00300C10: PRESC=0, SCLDEL=3, SDADEL=0, SCLH=12, SCLL=16.
+ * Counter-only period = (13+17)/30 MHz = 1 us; filter/synchronization
+ * and physical rise/fall times extend this toward the 1.25 us target.
+ * This is an experimental setting, not a guaranteed 800 kHz clock.
+ * Measure SCL at the sensor; TCA9548A is rated for only 400 kHz.
+ * I2C3 retains conservative <100 kHz timing (0x20F22C36).
+ * An extreme-speedup config is 0x00200408, which reaches nearly 2.14MHz clock.
+ * now 0x0020060AU about 1.1MHz,is a tradeoff
  */
 #ifndef I2C1_TIMING_VALUE
-#define I2C1_TIMING_VALUE 0x20F22C36U
+#define I2C1_TIMING_VALUE 0x0020060AU
 #endif
 #ifndef I2C2_TIMING_VALUE
-#define I2C2_TIMING_VALUE 0x20F22C36U
+#define I2C2_TIMING_VALUE 0x0020060AU
 #endif
 #ifndef I2C3_TIMING_VALUE
 #define I2C3_TIMING_VALUE 0x20F22C36U
