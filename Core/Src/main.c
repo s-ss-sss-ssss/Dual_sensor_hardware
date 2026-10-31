@@ -1,3 +1,6 @@
+#include "sensor_error.h"
+uint16_t g_sensor_errormap = 0;
+uint8_t g_sensor_failure_streak[12] = {0};
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
@@ -90,6 +93,9 @@ static void MPU_Config(void);
 #endif
 #ifndef SENSOR_OUTPUT_TMAG
 #define SENSOR_OUTPUT_TMAG  0
+#endif
+#if SENSOR_OUTPUT_AK && SENSOR_OUTPUT_TMAG
+#error AK and TMAG must not be enabled together
 #endif
 #ifndef SENSOR_OUTPUT_FORMAT
 #define SENSOR_OUTPUT_FORMAT SENSOR_OUTPUT_FORMAT_BINARY
@@ -330,7 +336,7 @@ int main(void)
 
   g_device_id = DeviceId_FromUID();
 
-  HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, SensorError_Count() >= 3 ? GPIO_PIN_RESET : GPIO_PIN_SET);
   HAL_GPIO_WritePin(LEDG_GPIO_Port, LEDG_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(LEDB_GPIO_Port, LEDB_Pin, GPIO_PIN_SET);
 
@@ -349,7 +355,7 @@ int main(void)
   if (ICM42670_Init(&icm) != HAL_OK)
   {
       printf("ICM init FAILED\r\n");
-      HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_RESET);
+      /* Red LED is controlled by the shared fault count. */
   }
   else
   {
@@ -358,7 +364,7 @@ int main(void)
 
   int ak_count = 0;
   int tmag_count = 0;
-  for (int attempt = 1; attempt <= 5; attempt++) {
+  for (int attempt = 1; attempt <= 1; attempt++) {
       printf("MAG init attempt %d\r\n", attempt);
 #if SENSOR_OUTPUT_AK
       Sensor_AK09973D_Init_All();
@@ -381,13 +387,14 @@ int main(void)
              ak_count, AK09973D_COUNT, tmag_count, TMAG3001_TOTAL_NUM);
 
       if (ak_count == AK09973D_COUNT && tmag_count == TMAG3001_TOTAL_NUM) {
-          HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, SensorError_Count() >= 3 ? GPIO_PIN_RESET : GPIO_PIN_SET);
           break;
       }
       HAL_Delay(500);
-      HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_RESET);
+      /* Red LED is controlled by the shared fault count. */
   }
 
+  HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, SensorError_Count() >= 3 ? GPIO_PIN_RESET : GPIO_PIN_SET);
   PhaseCapture_Start();
 
   /* USER CODE END 2 */
@@ -479,7 +486,7 @@ int main(void)
           build_ok &= BinaryWriter_AppendStats(binary_frame, sizeof(binary_frame), &off,
                                                record_seq++, now,
                                                ak_frames, tmag_frames, icm_frames,
-                                               skipped, errors, g_device_id);
+                                               skipped, errors, g_device_id, g_sensor_errormap);
           last_stats_ms = now;
       }
       /* ⑤ 到期时追加 STATS 后，填写整轮长度和 CRC，再通过 USB 发送整轮。
@@ -553,6 +560,8 @@ int main(void)
 #endif
 
       // LED 状态指示
+      HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin,
+                        SensorError_Count() >= 3U ? GPIO_PIN_RESET : GPIO_PIN_SET);
       static uint32_t last_toggle = 0;
       if (HAL_GetTick() - last_toggle > 500)
       {

@@ -1,3 +1,4 @@
+#include "sensor_error.h"
 #include "stm32h7xx_hal.h"
 #include <stdio.h>
 #include <string.h>
@@ -134,7 +135,7 @@ static HAL_StatusTypeDef ak_select_channel(uint8_t bus, uint8_t mask)
     I2C_HandleTypeDef *hi2c = get_i2c(bus);
     HAL_StatusTypeDef status = TCA9548_Select(hi2c, AK09973D_TCA_ADDR_7B, mask);
 
-    if (status != HAL_OK) {
+    if (0) {
         if (bus == 1) {
             i2c1_gpio_bus_clear();
         }
@@ -142,7 +143,7 @@ static HAL_StatusTypeDef ak_select_channel(uint8_t bus, uint8_t mask)
         status = TCA9548_Select(hi2c, AK09973D_TCA_ADDR_7B, mask);
     }
 
-    if (status == HAL_OK && bus == 1 && HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET) {
+    if (0 && status == HAL_OK && bus == 1 && HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET) {
         printf("[AK] I2C1 CH0x%02X holds SDA low, bus-clear retry\r\n", mask);
         i2c1_gpio_bus_clear();
         ak_bus_reset(1);
@@ -215,6 +216,7 @@ void Sensor_AK09973D_Init_All(void)
 
         HAL_StatusTypeDef tca = ak_select_channel(g_config[i].i2c_bus, mask);
         if (tca != HAL_OK) {
+            SensorError_Set(SensorError_AK(g_config[i].i2c_bus, mask));
             printf("AKINITERR,%d,0x%02X,TCA,%s,0x%08lX\r\n",
                    g_config[i].i2c_bus, mask, hal_status_name(tca), (unsigned long)HAL_I2C_GetError(hi2c));
             if (g_config[i].i2c_bus == 1) tca_fail_bus1++;
@@ -224,6 +226,7 @@ void Sensor_AK09973D_Init_All(void)
 
         HAL_StatusTypeDef probe = AK09973D_Probe(hi2c, addr, &company, &device);
         if (probe != HAL_OK) {
+            SensorError_Set(SensorError_AK(g_config[i].i2c_bus, mask));
             printf("AKINITERR,%d,0x%02X,WIA,%02X%02X,0x%08lX\r\n",
                    g_config[i].i2c_bus, mask, company, device, (unsigned long)HAL_I2C_GetError(hi2c));
             if (g_config[i].i2c_bus == 1) dev_fail_bus1++;
@@ -234,6 +237,7 @@ void Sensor_AK09973D_Init_All(void)
         ak09973d_t dev = {0};
         HAL_StatusTypeDef ak = AK09973D_InitWithConfig(&dev, hi2c, addr, AK09973D_ACTIVE_CNTL2);
         if (ak != HAL_OK) {
+            SensorError_Set(SensorError_AK(g_config[i].i2c_bus, mask));
             printf("AKINITERR,%d,0x%02X,INIT,%s,0x%08lX\r\n",
                    g_config[i].i2c_bus, mask, hal_status_name(ak), (unsigned long)HAL_I2C_GetError(hi2c));
             if (g_config[i].i2c_bus == 1) dev_fail_bus1++;
@@ -265,7 +269,7 @@ void Sensor_AK09973D_Init_All(void)
         HAL_GPIO_WritePin(LEDG_GPIO_Port, LEDG_Pin, GPIO_PIN_SET);
     } else if (count == 0) {
         // 全失败 - 红灯亮
-        HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_RESET);
+        /* Shared fault count controls red LED. */
     }
 }
 
@@ -274,9 +278,12 @@ int Sensor_AK09973D_ReadToCSV(char *out, size_t out_size)
     size_t off = 0;
 
     for (int i = 0; i < AK09973D_COUNT && g_valid[i].dev.hi2c != NULL; i++) {
+        unsigned bit = SensorError_AK(g_valid[i].i2c_bus, g_valid[i].mask);
+        if (SensorError_Has(bit)) continue;
         I2C_HandleTypeDef *hi2c = get_i2c(g_valid[i].i2c_bus);
 
         if (ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask) != HAL_OK) {
+            SensorError_Failure(bit);
             if (!csv_append_akerr_line(out, out_size, &off,
                                        g_valid[i].i2c_bus, g_valid[i].mask,
                                        "TCA", HAL_I2C_GetError(hi2c))) {
@@ -290,6 +297,7 @@ int Sensor_AK09973D_ReadToCSV(char *out, size_t out_size)
 
         ak09973d_magdata_t data;
         if (AK09973D_ReadMagData(&g_valid[i].dev, &data) != HAL_OK) {
+            SensorError_Failure(bit);
             if (!csv_append_akerr_line(out, out_size, &off,
                                        g_valid[i].i2c_bus, g_valid[i].mask,
                                        "READ", HAL_I2C_GetError(hi2c))) {
@@ -298,6 +306,7 @@ int Sensor_AK09973D_ReadToCSV(char *out, size_t out_size)
             continue;
         }
 
+        SensorError_Success(bit);
         if (!csv_append_ak_line(out, out_size, &off,
                                 g_valid[i].i2c_bus, g_valid[i].mask, &data)) {
             break;
@@ -324,9 +333,12 @@ int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
     size_t off = 0;
 
     for (int i = 0; i < AK09973D_COUNT && g_valid[i].dev.hi2c != NULL; i++) {
+        unsigned bit = SensorError_AK(g_valid[i].i2c_bus, g_valid[i].mask);
+        if (SensorError_Has(bit)) continue;
         I2C_HandleTypeDef *hi2c = get_i2c(g_valid[i].i2c_bus);
 
         if (ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask) != HAL_OK) {
+            SensorError_Failure(bit);
             if (errors != NULL) (*errors)++;
             (void)BinaryWriter_AppendError(out, out_size, &off,
                                            (*seq)++, HAL_GetTick(),
@@ -337,6 +349,7 @@ int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
 
         ak09973d_magdata_t data;
         if (AK09973D_ReadMagData(&g_valid[i].dev, &data) != HAL_OK) {
+            SensorError_Failure(bit);
             if (errors != NULL) (*errors)++;
             (void)BinaryWriter_AppendError(out, out_size, &off,
                                            (*seq)++, HAL_GetTick(),
@@ -345,6 +358,7 @@ int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
             continue;
         }
 
+        SensorError_Success(bit);
         if ((data.status & AK09973D_ST_DRDY) == 0U) {
             if (skipped != NULL) (*skipped)++;
             continue;

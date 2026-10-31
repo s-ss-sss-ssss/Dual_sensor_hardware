@@ -1,3 +1,4 @@
+#include "sensor_error.h"
 #include "stm32h7xx_hal.h"
 #include <stdio.h>
 #include <string.h>
@@ -254,7 +255,7 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
     int sensor_count = 0;
     for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
         TMAG3001_Instance_t *inst = &g_tmag_list[i];
-        if (inst->inited && inst->tca_ch_mask == tca_ch_mask) {
+        if (inst->inited && !SensorError_Has(SensorError_TMAG(inst->tca_ch_mask, inst->addr7)) && inst->tca_ch_mask == tca_ch_mask) {
             sensor_count++;
         }
     }
@@ -267,8 +268,8 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
     }
 
     if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask) != HAL_OK) {
-        tmag_i2c_recover();
-        return 0;
+        for(unsigned a=0x34;a<=0x36;a++) SensorError_Failure(SensorError_TMAG(tca_ch_mask,a));
+        return 1;
     }
 
     // Channel-level recovery: send 72 SCL pulses after TCA select to clock out
@@ -280,7 +281,7 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
 
     for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
         TMAG3001_Instance_t *inst = &g_tmag_list[i];
-        if (!inst->inited) continue;
+        if (!inst->inited || SensorError_Has(SensorError_TMAG(inst->tca_ch_mask, inst->addr7))) continue;
         if (inst->tca_ch_mask != tca_ch_mask) continue;
 
         // Per-sensor recovery: send SCL pulses + STOP + TCA reselect before each read.
@@ -304,9 +305,11 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
 
         tmag3001_data_t data;
         HAL_StatusTypeDef read_status = HAL_ERROR;
-        for (int retry = 0; retry < 2; retry++) {
+        for (int retry = 0; retry < 1; retry++) {
             read_status = TMAG3001_ReadData(&inst->dev, &data);
             if (read_status == HAL_OK) break;
+            SensorError_Failure(SensorError_TMAG(inst->tca_ch_mask, inst->addr7));
+            break;
             // Full bus recovery + TCA reselect
             tmag_i2c_recover();
             TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask);
@@ -318,6 +321,7 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
 
         if (read_status != HAL_OK) continue;
 
+        SensorError_Success(SensorError_TMAG(inst->tca_ch_mask, inst->addr7));
         if (!tmag_append_line(out, out_size, off, tca_ch_mask, inst->addr7, &data)) {
             TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
             return 0;
@@ -345,7 +349,7 @@ static int tmag_read_channel_to_binary(uint8_t tca_ch_mask, uint8_t *out,
     int sensor_count = 0;
     for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
         TMAG3001_Instance_t *inst = &g_tmag_list[i];
-        if (inst->inited && inst->tca_ch_mask == tca_ch_mask) {
+        if (inst->inited && !SensorError_Has(SensorError_TMAG(inst->tca_ch_mask, inst->addr7)) && inst->tca_ch_mask == tca_ch_mask) {
             sensor_count++;
         }
     }
@@ -357,13 +361,13 @@ static int tmag_read_channel_to_binary(uint8_t tca_ch_mask, uint8_t *out,
     }
 
     if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask) != HAL_OK) {
-        tmag_i2c_recover();
+        for(unsigned a=0x34;a<=0x36;a++) SensorError_Failure(SensorError_TMAG(tca_ch_mask,a));
         if (errors != NULL) (*errors)++;
         (void)BinaryWriter_AppendError(out, out_size, off,
                                        (*seq)++, HAL_GetTick(),
                                        BINARY_ERR_SOURCE_TMAG, 1U,
                                        HAL_I2C_GetError(&hi2c3));
-        return 0;
+        return 1;
     }
 
 #if TMAG_RECOVERY_SCL_PULSES > 0
@@ -372,7 +376,7 @@ static int tmag_read_channel_to_binary(uint8_t tca_ch_mask, uint8_t *out,
 
     for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
         TMAG3001_Instance_t *inst = &g_tmag_list[i];
-        if (!inst->inited) continue;
+        if (!inst->inited || SensorError_Has(SensorError_TMAG(inst->tca_ch_mask, inst->addr7))) continue;
         if (inst->tca_ch_mask != tca_ch_mask) continue;
 
         int n_pulses = (inst->addr7 == TMAG3001_ADDR_A2_SDA) ? TMAG_PULSE_SDA : TMAG_PULSE_NORMAL;
@@ -390,9 +394,11 @@ static int tmag_read_channel_to_binary(uint8_t tca_ch_mask, uint8_t *out,
 
         tmag3001_data_t data;
         HAL_StatusTypeDef read_status = HAL_ERROR;
-        for (int retry = 0; retry < 2; retry++) {
+        for (int retry = 0; retry < 1; retry++) {
             read_status = TMAG3001_ReadData(&inst->dev, &data);
             if (read_status == HAL_OK) break;
+            SensorError_Failure(SensorError_TMAG(inst->tca_ch_mask, inst->addr7));
+            break;
             tmag_i2c_recover();
             TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask);
             if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
@@ -409,6 +415,7 @@ static int tmag_read_channel_to_binary(uint8_t tca_ch_mask, uint8_t *out,
             continue;
         }
 
+        SensorError_Success(SensorError_TMAG(inst->tca_ch_mask, inst->addr7));
         if ((data.status & TMAG3001_STATUS_DRDY) == 0U) {
             if (skipped != NULL) (*skipped)++;
             continue;
@@ -492,6 +499,7 @@ void Sensor_TMAG3001_Init_All(void)
                   (unsigned int)TMAG3001_TCA_ADDR_7B, (int)tca_status,
                   (unsigned long)tca_error);
     if (tca_status != HAL_OK) {
+        g_sensor_errormap = 0x0FFFU;
         printf("TMAG: TCA not responding - abort\r\n");
         fflush(stdout);
         return;
@@ -509,7 +517,7 @@ void Sensor_TMAG3001_Init_All(void)
 
         int ch_start_idx = idx;
         int ch_ok = 0;
-        for (int ch_attempt = 0; ch_attempt < 2 && ch_ok == 0; ch_attempt++) {
+        for (int ch_attempt = 0; ch_attempt < 1 && ch_ok == 0; ch_attempt++) {
             idx = ch_start_idx;
 
         // Select TCA channel directly (no prior deselect needed)
@@ -521,9 +529,9 @@ void Sensor_TMAG3001_Init_All(void)
                       (int)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8),
                       (int)HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_9));
         if (tca_status != HAL_OK) {
+            for(unsigned a=0x34;a<=0x36;a++) SensorError_Set(SensorError_TMAG(mask,a));
             printf("TMAG CH%d: TCA select FAIL\r\n", ch);
             fflush(stdout);
-            tmag_hardware_reset();
             continue;
         }
         HAL_Delay(20);
@@ -547,23 +555,14 @@ void Sensor_TMAG3001_Init_All(void)
                 inst->inited = 1;
                 ch_ok++;
             } else {
-                tca_status = TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
-                tca_error = HAL_I2C_GetError(&hi2c3);
-                TMAG_INIT_LOG("[TMAG INIT] CH%u retry deselect hal=%d err=0x%08lX\r\n",
-                              (unsigned int)ch, (int)tca_status, (unsigned long)tca_error);
-                HAL_Delay(5);
-                tca_status = TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, mask);
-                tca_error = HAL_I2C_GetError(&hi2c3);
-                TMAG_INIT_LOG("[TMAG INIT] CH%u retry reselect mask=0x%02X hal=%d err=0x%08lX\r\n",
-                              (unsigned int)ch, (unsigned int)mask,
-                              (int)tca_status, (unsigned long)tca_error);
-                HAL_Delay(20);
+                SensorError_Set(SensorError_TMAG(mask, addr));
+
             }
             idx++;
             HAL_Delay(20);
         }
 
-        if (ch_ok == 0 && ch_attempt == 0) {
+        if (0) {
             TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
             HAL_Delay(10);
             tmag_hardware_reset();

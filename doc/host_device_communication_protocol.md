@@ -36,7 +36,7 @@
 | `0x03` | ICM | 18 | `offset_us:u32, ax:i16, ay:i16, az:i16, gx:i16, gy:i16, gz:i16, temp:i16` |
 | `0x04` | PHASE | 12 | `ch1_age_us:u32, ch2_age_us:u32, ch3_age_us:u32` |
 | `0xE0` | ERR | 7 | `source:u8, code:u16, detail:u32` |
-| `0xF0` | STATS | 24 | `ak_frames:u32, tmag_frames:u32, icm_frames:u32, skipped:u32, errors:u32, device_id:u32` |
+| `0xF0` | STATS | 26 | `ak_frames:u32, tmag_frames:u32, icm_frames:u32, skipped:u32, errors:u32, device_id:u32, errormap:u16` |
 
 传感器未就绪时该轮省略对应记录并增加 `skipped`。访问失败时可追加 ERR，`source` 的 1/2/3 分别指 AK/TMAG/ICM；`code` 1 指通道选择错误，2 指读取错误。`source=4, code=1` 表示此前 USB 发送失败，`detail` 是累计发送失败次数，在下一次成功发送的轮中可见。ERR 当前不含具体传感器实例。PHASE 每轮一条，记录轮首采样时三路最近上升沿的年龄；从未捕获到边沿的通道为 `0xFFFFFFFF`。STATS 约每秒附加一次，计数从主循环开始累计。
 
@@ -55,3 +55,33 @@
 在持久字节缓存中搜索同步字，读取 14 字节帧头并限制 `payload_len`，等到 `16 + payload_len` 字节齐全后验证版本、类型和 CRC，再逐条检查 `record_len` 是否留在 payload 范围内。校验失败时从当前同步字后一字节重新搜索；保留末尾半帧等待下次读取。整轮以一帧直接交给上层，不需要以 PHASE 记录聚合。参考实现：`python tools/usb_read.py --port COM5 --format binary --duration 10`。
 
 协议版本 1 的接收程序必须更新。USB CDC 接收回调目前没有下行命令解析。CSV 模式仍输出原有 AK、TMAG、ICM、PHASE 文本行。
+
+## Sensor failure latch and errormap
+
+STATS body is now 26 bytes. Existing offsets 0..23 are unchanged; offset 24 contains `errormap:u16le`. ROUND version remains 2. Receivers must accept the new record length. Older 20/24-byte STATS have no errormap: report unknown, not healthy.
+
+Bits 0..11 correspond to fixed sensor IDs 1..12; 1 means failed and disabled. Bits 12..15 are reserved and zero. AK and TMAG share the bitmap and cannot be enabled together. ICM is excluded.
+
+- AK: `sensor_id = (bus - 1) * 6 + channel`, with CH1..CH6 and `mask = 1 << channel`.
+- TMAG: `sensor_id = (channel - 1) * 3 + (addr - 0x34) + 1`, with CH1..CH4 and addresses 0x34..0x36.
+- IDs remain fixed when records disappear; never infer ID from record order. See [sensor mapping](sensor_id_mapping.md).
+
+The first initialization failure latches the bit until MCU restart. Runtime channel-selection/read failures latch only after 3 consecutive failures for that sensor (SENSOR_ERROR_FAILURE_LIMIT). A successful data read resets its streak, even with DRDY=0. Before the threshold, failed rounds omit measurements and report diagnostics but later rounds retry normally. A failed read emits no measurement record in that round. Subsequent rounds skip the disabled sensor entirely; there is no zero placeholder, cached-value replacement, retry, or automatic re-enable. Other healthy sensors continue producing records. TCA selection failure disables all configured sensors on that channel. DRDY=0 is skipped, not latched as failure.
+
+Runtime binary access failures may emit an ERR record once at detection. ERR is diagnostic metadata, not a measurement. The latched state is reported in each subsequent STATS (approximately once per second); STATS is not emitted every round. Initialization failures are visible in errormap; the existing errors counter remains a runtime counter. With all sensors disabled, PHASE and STATS continue. CSV mode also skips failed sensors but does not add a CSV STATS record.
+
+Red LED is on only when at least three bitmap bits are set. ICM faults do not affect this count. Green LED remains the main-loop heartbeat.
+
+Python decoding (payload is the STATS record body, excluding the TLV header):
+
+```python
+import struct
+
+errormap = struct.unpack_from('<H', payload, 24)[0] if len(payload) >= 26 else None
+failed_ids = None if errormap is None else [
+    sensor_id for sensor_id in range(1, 13)
+    if errormap & (1 << (sensor_id - 1))
+]
+```
+
+For example, `errormap=0x0805` means IDs 1, 3 and 12 are disabled, so the red LED is on. Their measurement records are absent; healthy sensors retain their original IDs. A previously received measurement is historical data and must not be reused as a new sample for a missing record.

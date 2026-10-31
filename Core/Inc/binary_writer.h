@@ -43,7 +43,7 @@ int BinaryWriter_AppendStats(uint8_t *out, size_t out_size, size_t *off,
                              uint32_t seq, uint32_t tick_ms,
                              uint32_t ak_frames, uint32_t tmag_frames,
                              uint32_t icm_frames, uint32_t skipped,
-                             uint32_t errors, uint32_t device_id);
+                             uint32_t errors, uint32_t device_id, uint16_t errormap);
 int BinaryWriter_AppendPhase(uint8_t *out, size_t out_size, size_t *off,
                              uint32_t seq, uint32_t tick_ms,
                              const uint32_t phase_us[3]);

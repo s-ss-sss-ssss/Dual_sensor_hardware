@@ -27,12 +27,13 @@ int main(void)
     assert(BinaryWriter_AppendError(out, sizeof(out), &off, 0, 0, 2, 1, 3));
     size_t stats_off = off;
     assert(BinaryWriter_AppendStats(out, sizeof(out), &off, 0, 0, 1, 2, 3, 4, 5,
-                                    0x12345678U));
-    assert(off - stats_off == 27);
+                                    0x12345678U, 0x0801U));
+    assert(off - stats_off == 29);
     assert(out[stats_off] == BINARY_FRAME_TYPE_STATS);
-    assert(out[stats_off + 1] == 24 && out[stats_off + 2] == 0);
+    assert(out[stats_off + 1] == 26 && out[stats_off + 2] == 0);
     assert(out[stats_off + 23] == 0x78 && out[stats_off + 24] == 0x56 &&
            out[stats_off + 25] == 0x34 && out[stats_off + 26] == 0x12);
+    assert(out[stats_off + 27] == 1 && out[stats_off + 28] == 8);
     assert(BinaryWriter_EndRound(out, sizeof(out), &off));
     assert(out[12] == off - 16 && out[13] == 0);
 

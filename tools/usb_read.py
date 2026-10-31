@@ -136,12 +136,13 @@ def decode_frame(frame):
         source, code, detail = struct.unpack("<BHI", payload)
         key = f"SRC{source}"
         return "ERR", key, f"ERR {when} src={source} code={code} detail=0x{detail:08X}"
-    if frame_type == 0xF0 and len(payload) in (20, 24):
+    if frame_type == 0xF0 and len(payload) in (20, 24, 26):
         ak, tmag, icm, skipped, errors = struct.unpack_from("<IIIII", payload)
         device = ""
-        if len(payload) == 24:
+        if len(payload) >= 24:
             device_id = struct.unpack_from("<I", payload, 20)[0]
             device = f" device_id=0x{device_id:08X}"
+        device += f" errormap=0x{int.from_bytes(payload[24:26], 'little'):04X}" if len(payload) == 26 else " errormap=unknown"
         return "STATS", "STATS", f"STATS {when} ak={ak} tmag={tmag} icm={icm} skipped={skipped} errors={errors}{device}"
     name = TYPE_NAMES.get(frame_type, f"0x{frame_type:02X}")
     return name, name, f"{name} {when} payload_len={len(payload)}"
