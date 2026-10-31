@@ -12,6 +12,7 @@
 #include "tca9548.h"
 
 uint32_t g_ak_bus_read_us[2];
+uint32_t g_ak_parallel_read_us;
 extern I2C_HandleTypeDef hi2c1;
 extern I2C_HandleTypeDef hi2c2;
 
@@ -275,124 +276,196 @@ void Sensor_AK09973D_Init_All(void)
     }
 }
 
+/* Callbacks publish only per-bus completion; all shared results are written here. */
+typedef enum { AK_IDLE, AK_SELECT, AK_READ, AK_DONE } ak_state_t;
+typedef struct {
+    I2C_HandleTypeDef *i2c;
+    unsigned bus, index;
+    uint8_t mask, rx[7];
+    ak_state_t state;
+    volatile uint8_t pending, completed;
+    volatile uint32_t completed_us, error;
+    uint32_t op_start, bus_start, bus_end;
+    uint8_t started;
+} ak_bus_t;
+typedef struct {
+    ak09973d_magdata_t data;
+    uint32_t completed_us, error;
+    uint8_t result; /* 0 not visited, 1 read, 2 select error, 3 read error */
+} ak_result_t;
+static ak_bus_t g_buses[2];
+static ak_result_t g_results[AK09973D_COUNT];
+
+static void ak_callback(I2C_HandleTypeDef *i2c, ak_state_t expected, uint8_t failed)
+{
+    for (unsigned i = 0; i < 2; ++i) {
+        ak_bus_t *b = &g_buses[i];
+        if (b->i2c == i2c && b->pending && !b->completed &&
+            (failed || b->state == expected)) {
+            b->completed_us = __HAL_TIM_GET_COUNTER(&htim2);
+            b->error = failed ? HAL_I2C_GetError(i2c) : 0;
+            b->completed = failed ? 2U : 1U;
+            break;
+        }
+    }
+}
+void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *i2c) { ak_callback(i2c, AK_SELECT, 0); }
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *i2c) { ak_callback(i2c, AK_READ, 0); }
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *i2c) { ak_callback(i2c, AK_IDLE, 1); }
+
+static void ak_recover_timeout(ak_bus_t *b)
+{
+    IRQn_Type ev = b->bus == 1 ? I2C1_EV_IRQn : I2C2_EV_IRQn;
+    IRQn_Type er = b->bus == 1 ? I2C1_ER_IRQn : I2C2_ER_IRQn;
+    HAL_NVIC_DisableIRQ(ev); HAL_NVIC_DisableIRQ(er);
+    b->pending = 0;
+    HAL_I2C_DeInit(b->i2c);
+    if (b->bus == 1) MX_I2C1_Init(); else MX_I2C2_Init();
+    HAL_NVIC_ClearPendingIRQ(ev); HAL_NVIC_ClearPendingIRQ(er);
+    HAL_NVIC_EnableIRQ(ev); HAL_NVIC_EnableIRQ(er);
+}
+
+static void ak_start_op(ak_bus_t *b, ak_state_t state)
+{
+    HAL_StatusTypeDef status;
+    b->state = state;
+    b->completed = 0;
+    b->error = 0;
+    b->op_start = __HAL_TIM_GET_COUNTER(&htim2);
+    if (!b->started) { b->started = 1; b->bus_start = b->op_start; }
+    b->pending = 1;
+    if (state == AK_SELECT) {
+        b->mask = g_valid[b->index].mask;
+        status = HAL_I2C_Master_Transmit_IT(b->i2c, AK09973D_TCA_ADDR_7B << 1, &b->mask, 1);
+    } else {
+        status = HAL_I2C_Mem_Read_IT(b->i2c, g_valid[b->index].dev.addr7 << 1,
+                                     AK09973D_REG_READ_XYZ, I2C_MEMADD_SIZE_8BIT, b->rx, 7);
+    }
+    if (status != HAL_OK) {
+        b->error = HAL_I2C_GetError(b->i2c);
+        b->completed_us = __HAL_TIM_GET_COUNTER(&htim2);
+        b->completed = 2;
+    }
+}
+
+static void ak_service(ak_bus_t *b)
+{
+    if (b->state == AK_DONE) return;
+    if (b->pending) {
+        uint32_t now = __HAL_TIM_GET_COUNTER(&htim2);
+        uint32_t limit = b->state == AK_SELECT ? 10000U : 100000U;
+        if (!b->completed && (uint32_t)(now - b->op_start) >= limit) {
+            /* Disable IRQ first and recheck: a completion may have raced the timeout. */
+            IRQn_Type ev = b->bus == 1 ? I2C1_EV_IRQn : I2C2_EV_IRQn;
+            IRQn_Type er = b->bus == 1 ? I2C1_ER_IRQn : I2C2_ER_IRQn;
+            HAL_NVIC_DisableIRQ(ev); HAL_NVIC_DisableIRQ(er);
+            if (!b->completed) {
+                b->error = HAL_I2C_ERROR_TIMEOUT;
+                b->completed_us = now;
+                b->completed = 2;
+                ak_recover_timeout(b);
+                b->pending = 1; /* consume this failure once below */
+                b->started = 2; /* stop this bus after the failure */
+            } else {
+                HAL_NVIC_EnableIRQ(ev); HAL_NVIC_EnableIRQ(er);
+            }
+        }
+        if (!b->completed) return;
+        b->pending = 0;
+        b->bus_end = b->completed_us;
+        ak_result_t *r = &g_results[b->index];
+        if (b->completed == 2) {
+            r->result = b->state == AK_SELECT ? 2 : 3;
+            r->error = b->error;
+            SensorError_Failure(SensorError_AK(b->bus, g_valid[b->index].mask));
+            ++b->index;
+            if (b->started == 2) { b->state = AK_DONE; return; }
+        } else if (b->state == AK_SELECT) {
+            ak_start_op(b, AK_READ);
+            return;
+        } else {
+            r->data.status = b->rx[0];
+            r->data.hz = (int16_t)((b->rx[1] << 8) | b->rx[2]);
+            r->data.hy = (int16_t)((b->rx[3] << 8) | b->rx[4]);
+            r->data.hx = (int16_t)((b->rx[5] << 8) | b->rx[6]);
+            r->completed_us = b->completed_us;
+            r->result = 1;
+            SensorError_Success(SensorError_AK(b->bus, g_valid[b->index].mask));
+            ++b->index;
+        }
+    }
+    while (b->index < AK09973D_COUNT && g_valid[b->index].dev.hi2c != NULL) {
+        if (g_valid[b->index].i2c_bus == b->bus &&
+            !SensorError_Has(SensorError_AK(b->bus, g_valid[b->index].mask))) {
+            ak_start_op(b, AK_SELECT);
+            return;
+        }
+        ++b->index;
+    }
+    b->state = AK_DONE;
+}
+
+static void ak_collect(void)
+{
+    memset(g_results, 0, sizeof(g_results));
+    memset(g_buses, 0, sizeof(g_buses));
+    g_buses[0].i2c = &hi2c1; g_buses[0].bus = 1;
+    g_buses[1].i2c = &hi2c2; g_buses[1].bus = 2;
+    uint32_t start = __HAL_TIM_GET_COUNTER(&htim2);
+    ak_service(&g_buses[0]); ak_service(&g_buses[1]);
+    while (g_buses[0].state != AK_DONE || g_buses[1].state != AK_DONE) {
+        ak_service(&g_buses[0]); ak_service(&g_buses[1]);
+    }
+    g_ak_parallel_read_us = __HAL_TIM_GET_COUNTER(&htim2) - start;
+    for (unsigned i = 0; i < 2; ++i)
+        g_ak_bus_read_us[i] = g_buses[i].started ? g_buses[i].bus_end - g_buses[i].bus_start : 0;
+}
+
 int Sensor_AK09973D_ReadToCSV(char *out, size_t out_size)
 {
     size_t off = 0;
-
-    for (int i = 0; i < AK09973D_COUNT && g_valid[i].dev.hi2c != NULL; i++) {
-        unsigned bit = SensorError_AK(g_valid[i].i2c_bus, g_valid[i].mask);
-        if (SensorError_Has(bit)) continue;
-        I2C_HandleTypeDef *hi2c = get_i2c(g_valid[i].i2c_bus);
-
-        if (ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask) != HAL_OK) {
-            SensorError_Failure(bit);
-            if (!csv_append_akerr_line(out, out_size, &off,
-                                       g_valid[i].i2c_bus, g_valid[i].mask,
-                                       "TCA", HAL_I2C_GetError(hi2c))) {
-                break;
-            }
-            continue;
+    ak_collect();
+    for (unsigned i = 0; i < AK09973D_COUNT; ++i) {
+        ak_result_t *r = &g_results[i];
+        if (r->result >= 2) {
+            if (!csv_append_akerr_line(out, out_size, &off, g_valid[i].i2c_bus,
+                                       g_valid[i].mask, r->result == 2 ? "TCA" : "READ", r->error)) break;
+        } else if (r->result == 1 && (r->data.status & AK09973D_ST_DRDY)) {
+            if (!csv_append_ak_line(out, out_size, &off, g_valid[i].i2c_bus, g_valid[i].mask, &r->data)) break;
         }
-#if AK09973D_TCA_SETTLE_MS > 0
-        HAL_Delay(AK09973D_TCA_SETTLE_MS);
-#endif
-
-        ak09973d_magdata_t data;
-        if (AK09973D_ReadMagData(&g_valid[i].dev, &data) != HAL_OK) {
-            SensorError_Failure(bit);
-            if (!csv_append_akerr_line(out, out_size, &off,
-                                       g_valid[i].i2c_bus, g_valid[i].mask,
-                                       "READ", HAL_I2C_GetError(hi2c))) {
-                break;
-            }
-            continue;
-        }
-
-        SensorError_Success(bit);
-        if (!csv_append_ak_line(out, out_size, &off,
-                                g_valid[i].i2c_bus, g_valid[i].mask, &data)) {
-            break;
-        }
-
-#if AK09973D_POST_READ_MS > 0
-        if (g_valid[i].i2c_bus == 1) {
-            HAL_Delay(AK09973D_POST_READ_MS);
-        }
-#endif
     }
-
-#if AK09973D_DESELECT_AFTER_READ
-    TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, 0);
-    TCA9548_Select(&hi2c2, AK09973D_TCA_ADDR_7B, 0);
-#endif
     return (int)off;
 }
 
 int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
-                                 uint32_t *frames, uint32_t *skipped,
-                                 uint32_t *errors)
+                                 uint32_t *frames, uint32_t *skipped, uint32_t *errors)
 {
     size_t off = 0;
-    g_ak_bus_read_us[0] = g_ak_bus_read_us[1] = 0;
-
-    for (int i = 0; i < AK09973D_COUNT && g_valid[i].dev.hi2c != NULL; i++) {
-        unsigned bit = SensorError_AK(g_valid[i].i2c_bus, g_valid[i].mask);
-        if (SensorError_Has(bit)) continue;
-        I2C_HandleTypeDef *hi2c = get_i2c(g_valid[i].i2c_bus);
-
-        uint32_t io_start = __HAL_TIM_GET_COUNTER(&htim2);
-        HAL_StatusTypeDef io_status = ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask);
-        g_ak_bus_read_us[g_valid[i].i2c_bus - 1] += (uint32_t)(__HAL_TIM_GET_COUNTER(&htim2) - io_start);
-        if (io_status != HAL_OK) {
-            SensorError_Failure(bit);
-            if (errors != NULL) (*errors)++;
-            (void)BinaryWriter_AppendError(out, out_size, &off,
-                                           (*seq)++, HAL_GetTick(),
-                                           BINARY_ERR_SOURCE_AK, 1U,
-                                           HAL_I2C_GetError(hi2c));
-            continue;
-        }
-
-        ak09973d_magdata_t data;
-        io_start = __HAL_TIM_GET_COUNTER(&htim2);
-        io_status = AK09973D_ReadMagData(&g_valid[i].dev, &data);
-        g_ak_bus_read_us[g_valid[i].i2c_bus - 1] += (uint32_t)(__HAL_TIM_GET_COUNTER(&htim2) - io_start);
-        if (io_status != HAL_OK) {
-            SensorError_Failure(bit);
-            if (errors != NULL) (*errors)++;
-            (void)BinaryWriter_AppendError(out, out_size, &off,
-                                           (*seq)++, HAL_GetTick(),
-                                           BINARY_ERR_SOURCE_AK, 2U,
-                                           HAL_I2C_GetError(hi2c));
-            continue;
-        }
-
-        SensorError_Success(bit);
-        if ((data.status & AK09973D_ST_DRDY) == 0U) {
-            if (skipped != NULL) (*skipped)++;
-            continue;
-        }
-
-        uint8_t payload[11];
-        size_t poff = 0;
-        BinaryWriter_PutU8(payload, &poff, g_valid[i].i2c_bus);
-        BinaryWriter_PutU8(payload, &poff, g_valid[i].mask);
-        BinaryWriter_PutI16(payload, &poff, data.hx);
-        BinaryWriter_PutI16(payload, &poff, data.hy);
-        BinaryWriter_PutI16(payload, &poff, data.hz);
-        BinaryWriter_PutU8(payload, &poff, (data.status & AK09973D_ST_DRDY) ? 1U : 0U);
-        BinaryWriter_PutU8(payload, &poff, (data.status & AK09973D_ST_ERR) ? 1U : 0U);
-        BinaryWriter_PutU8(payload, &poff, (data.status & AK09973D_ST_DOR) ? 1U : 0U);
-
-        if (BinaryWriter_AppendFrame(out, out_size, &off, BINARY_FRAME_TYPE_AK,
-                                     (*seq)++, HAL_GetTick(),
-                                     payload, (uint16_t)poff)) {
-            if (frames != NULL) (*frames)++;
-        } else {
-            break;
+    ak_collect();
+    for (unsigned i = 0; i < AK09973D_COUNT; ++i) {
+        ak_result_t *r = &g_results[i];
+        if (r->result >= 2) {
+            if (errors) ++*errors;
+            (void)BinaryWriter_AppendError(out, out_size, &off, (*seq)++, HAL_GetTick(),
+                                           BINARY_ERR_SOURCE_AK, r->result - 1U, r->error);
+        } else if (r->result == 1) {
+            ak09973d_magdata_t *data = &r->data;
+            if (!(data->status & AK09973D_ST_DRDY)) { if (skipped) ++*skipped; continue; }
+            uint8_t payload[11]; size_t poff = 0;
+            BinaryWriter_PutU8(payload, &poff, g_valid[i].i2c_bus);
+            BinaryWriter_PutU8(payload, &poff, g_valid[i].mask);
+            BinaryWriter_PutI16(payload, &poff, data->hx);
+            BinaryWriter_PutI16(payload, &poff, data->hy);
+            BinaryWriter_PutI16(payload, &poff, data->hz);
+            BinaryWriter_PutU8(payload, &poff, !!(data->status & AK09973D_ST_DRDY));
+            BinaryWriter_PutU8(payload, &poff, !!(data->status & AK09973D_ST_ERR));
+            BinaryWriter_PutU8(payload, &poff, !!(data->status & AK09973D_ST_DOR));
+            if (BinaryWriter_AppendFrameAt(out, out_size, &off, BINARY_FRAME_TYPE_AK,
+                                           (*seq)++, HAL_GetTick(), payload, (uint16_t)poff, r->completed_us)) {
+                if (frames) ++*frames;
+            } else break;
         }
     }
-
     return (int)off;
 }
 

@@ -23,6 +23,11 @@ int main(void)
     off += record_off;
     assert(out[14] == BINARY_FRAME_TYPE_AK && out[15] == 15 && out[16] == 0);
     assert(out[17] == 10 && out[18] == 0 && out[19] == 0 && out[20] == 0);
+    size_t second = off;
+    assert(BinaryWriter_AppendFrameAt(out, sizeof(out), &off, BINARY_FRAME_TYPE_AK,
+                                     0, 0, sensor, 11, UINT32_MAX));
+    assert(out[second + 3] == 2 && out[second + 4] == 0 &&
+           out[second + 5] == 0 && out[second + 6] == 0);
     assert(BinaryWriter_AppendPhase(out, sizeof(out), &off, 0, 0, phase));
     assert(BinaryWriter_AppendError(out, sizeof(out), &off, 0, 0, 2, 1, 3));
     size_t stats_off = off;

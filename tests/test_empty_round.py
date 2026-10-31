@@ -24,6 +24,10 @@ HARNESS = r'''
 #define SENSOR_OUTPUT_AK 1
 #define SENSOR_OUTPUT_TMAG 1
 uint32_t test_tim2_count, g_device_id = 0x12345678U;
+uint16_t g_sensor_errormap;
+uint32_t g_ak_bus_read_us[2];
+#define htim2 test_tim2_count
+#define __HAL_TIM_GET_COUNTER(timer) (*(timer))
 static uint32_t tick, read_cost, usb_cost, phase_cost, delay_total;
 static int mode, send_ok, icm, sends;
 static FILE *wire;
@@ -162,7 +166,7 @@ class EmptyRoundTests(unittest.TestCase):
         self.assertEqual([f[0] for f in frames], [0, 1])
         self.assertIn(0xE0, [r[0] for r in frames[1][2]])
         stats = next(r[1] for r in frames[1][2] if r[0] == 0xF0)
-        self.assertEqual(struct.unpack("<IIIIII", stats), (0, 0, 0, 0, 1, 0x12345678))
+        self.assertEqual(struct.unpack("<IIIIII", stats[:24]), (0, 0, 0, 0, 1, 0x12345678))
         end, delay, _ = self.run_round(mode=2, usb=2, ok=0)
         self.assertEqual((end, delay), (2, 0))
 

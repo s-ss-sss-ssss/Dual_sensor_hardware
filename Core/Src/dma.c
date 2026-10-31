@@ -42,6 +42,16 @@ void MX_DMA_Init(void)
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
 
+  /* AK I2C event/error interrupts use the same priority as the DMA streams. */
+  HAL_NVIC_SetPriority(I2C1_EV_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(I2C1_ER_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(I2C2_EV_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(I2C2_ER_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
+  HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);
+  HAL_NVIC_EnableIRQ(I2C2_EV_IRQn);
+  HAL_NVIC_EnableIRQ(I2C2_ER_IRQn);
+
   /* DMA interrupt init */
   /* DMA1_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
@@ -61,4 +71,3 @@ void MX_DMA_Init(void)
 /* USER CODE BEGIN 2 */
 
 /* USER CODE END 2 */
-

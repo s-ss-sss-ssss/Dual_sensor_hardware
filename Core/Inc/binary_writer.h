@@ -33,6 +33,9 @@ int BinaryWriter_BeginRound(uint8_t *out, size_t out_size, size_t *off,
                             uint32_t start_us);
 int BinaryWriter_EndRound(uint8_t *out, size_t out_size, size_t *off);
 
+int BinaryWriter_AppendFrameAt(uint8_t *out, size_t out_size, size_t *off,
+                               uint8_t type, uint32_t seq, uint32_t tick_ms,
+                               const uint8_t *payload, uint16_t payload_len, uint32_t sample_us);
 int BinaryWriter_AppendFrame(uint8_t *out, size_t out_size, size_t *off,
                              uint8_t type, uint32_t seq, uint32_t tick_ms,
                              const uint8_t *payload, uint16_t payload_len);
